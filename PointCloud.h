@@ -16,8 +16,18 @@ public:
 	void push(State3D st);
 	void pop();
 
+	// PointCloud.h の public: の中
+	inline std::vector<State3D>::iterator begin() { return elm.begin(); }
+	inline std::vector<State3D>::iterator end()   { return elm.end(); }
+	inline std::vector<State3D>::const_iterator begin() const { return elm.begin(); }
+	inline std::vector<State3D>::const_iterator end()   const { return elm.end(); }
+	inline State3D& operator[](int i) { return elm[i]; }
+	inline const State3D& operator[](int i) const { return elm[i]; }
+
+
 	inline int size() const { return (int)elm.size(); }
 	inline State3D get(int num) const { return elm[num]; }
+	inline bool empty() const { return elm.empty(); }  // ← ★これを追加！
 	bool exist(State3D st) const;
 	bool overlap(PointCloud pc) const;
 

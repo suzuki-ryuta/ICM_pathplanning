@@ -62,6 +62,17 @@ public:
 		this->x = s.x;	this->y = s.y;	this->th = s.th;
 		return *this;
 	}
+		double dist(const State3D& other) const {
+    	double dx = static_cast<double>(x - other.x);
+    	double dy = static_cast<double>(y - other.y);
+    	double dth = static_cast<double>(th - other.th);
+
+    	// 角度の差を 0～180 に正規化（360度周期のため）
+    	dth = std::fmod(std::abs(dth), 360.0);
+    	if (dth > 180.0) dth = 360.0 - dth;
+
+    	return std::sqrt(dx * dx + dy * dy + dth * dth);
+	}
 };
 
 inline bool operator==(const State3D& s1, const State3D& s2)

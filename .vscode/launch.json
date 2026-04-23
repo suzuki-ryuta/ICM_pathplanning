@@ -1,0 +1,27 @@
+{
+"version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Manipulation",  // デバッグ構成の名前
+            "type": "cppdbg",  // デバッグするプログラムの言語タイプ（C++の場合は "cppdbg"）
+            "request": "launch",  // デバッグのリクエストタイプ（"launch"はプログラムを起動する）
+            "program": "${workspaceFolder}/Manipulation",  // 実行するプログラムのパス
+            "args": [],  // プログラムに渡す引数（引数がない場合は空の配列）
+            "stopAtEntry": false,  // プログラムが開始時にエントリポイントで停止するかどうか
+            "cwd": "${workspaceFolder}",  // 現在の作業ディレクトリ（通常はプロジェクトのルート）
+            "environment": [],  // プログラム実行時に設定する環境変数（必要に応じて設定）
+            "externalConsole": false,  // 外部コンソールを使用するかどうか（falseなら内部ターミナルを使用）
+            "MIMode": "gdb",  // 使用するデバッガー（"gdb"はGNU Debugger）
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",  // gdbのpretty-printing機能を有効にするコマンド
+                    "ignoreFailures": true  // コマンド実行失敗を無視する
+                }
+            ],
+            "preLaunchTask": "build",  // デバッグ前に実行するタスク（tasks.jsonで定義したタスク名）
+            "miDebuggerPath": "/usr/bin/gdb",  // gdbのパス（システムに応じて変更が必要な場合があります）
+            "internalConsoleOptions": "openOnSessionStart"  // デバッグ時に内部コンソールを自動で開く
+        }
+    ]
+}

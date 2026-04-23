@@ -490,12 +490,12 @@ bool RRTConnect::initialize(Node ini, Node fin)
 
 bool RRTConnect::sconf_update()
 {
-	Node newnode = s_tree.back_RRTNode().node;
-	if(!robot_update(newnode)){
+	Node newnode = s_tree.back_RRTNode().node; //新しいノードを取得
+	if(!robot_update(newnode)){ //干渉判定
 		s_tree.pop_back();
 		return false;
 	}
-	if(!caging_validation_sconf(newnode)){
+	if(!caging_validation_sconf(newnode)){ //ケージング成立条件とケージングマニピュレーション可能条件を同時に評価
 		s_tree.pop_back();
 		return false;
 	}
@@ -507,12 +507,12 @@ bool RRTConnect::sconf_update()
 
 bool RRTConnect::gconf_update()
 {
-	Node newnode = g_tree.back_RRTNode().node;
-	if(!robot_update(newnode)){
+	Node newnode = g_tree.back_RRTNode().node; 
+	if(!robot_update(newnode)){ //干渉判定
 		g_tree.pop_back();
 		return false;
 	}
-	if(!caging_validation_gconf(newnode)){
+	if(!caging_validation_gconf(newnode)){ //ケージング成立条件とケージングマニピュレーション可能条件を同時に評価
 		g_tree.pop_back();
 		return false;
 	}
@@ -561,9 +561,9 @@ GoalJudge RRTConnect::gconf_goaljudge(std::vector<PointCloud> cfo, RRTNode bef, 
 
 bool RRTConnect::caging_validation_sconf(Node node)
 {
-	std::vector<PointCloud> cfo = strategy->extract(s_tree.back_parentRRTNode().pc(), node);
+	std::vector<PointCloud> cfo = strategy->extract(s_tree.back_parentRRTNode().pc(), node); //cfo=c_free_obj.C(t-Δt)とC(t)の共通領域を算出
 
-	if((int)cfo.size() == 1){
+	if((int)cfo.size() == 1){ //ケージング成立条件とケージングマニピュレーション成立条件を同時に評価．C(t-Δt)とC(t)の共通領域が１つ
 		RRTNode validnode(node, cfo[0]);
 		s_tree.replace(validnode);
 		return true;
@@ -592,13 +592,13 @@ bool RRTConnect::caging_validation_gconf(Node newnode)
 		}
 	}
 
-	Node parent = g_tree.back_parentRRTNode().node;
+	Node parent = g_tree.back_parentRRTNode().node;//T_reveseを一つ遡り，ノードを取得
 	controller->robot_update(parent);
 	for(auto it = cfree_obj.begin(); it != cfree_obj.end(); ){
-		std::vector<PointCloud> prev_real_cfree = strategy->extract(*it, parent);
-		if(prev_real_cfree.size() != 1){
+		std::vector<PointCloud> prev_real_cfree = strategy->extract(*it, parent); //C(t)とC(t+Δt)の共通領域を求める
+		if(prev_real_cfree.size() != 1){ //ケージング成立条件とケージングマニピュレーション成立条件を同時に評価．C(t)とC(t+Δt)の共通領域が１つ出なければ弾く
 			del_list.push_back(*it);
-			it = cfree_obj.erase(it);
+			it = cfree_obj.erase(it); //ここで当該クラスタを弾く
 		}
 		else{
 			++it;
@@ -905,16 +905,25 @@ NodeList RRTConnect::plan(Node ini, Node fin, State3D goal)
 
 
 
+// void rand_init()
+// {
+// 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+// 	auto seed = duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count() % 100000;
+// 	log << "Seed : " << seed << std::endl;
+
+// 	std::srand((unsigned int)seed);
+// 	std::cout << "Seed value is " << seed << std::endl;
+// }
+//固定seed版
 void rand_init()
 {
-	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-	auto seed = duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count() % 100000;
-	log << "Seed : " << seed << std::endl;
+    std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+    unsigned int seed = 45790;  // ★ 固定値にする（例: 0や42など）
 
-	std::srand((unsigned int)seed);
-	std::cout << "Seed value is " << seed << std::endl;
+    log << "Seed : " << seed << " (fixed)" << std::endl;
+    std::srand(seed);
+    std::cout << "Seed value is " << seed << " (fixed)" << std::endl;
 }
-
 
 Node generate_newnode()
 {

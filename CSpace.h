@@ -13,7 +13,7 @@
 namespace bp = boost::property_tree;
 
 
-int read_symangle();
+int read_symangle(); //シンメトリーアングル
 State3D read_top();
 State3D read_bottom();
 Vector3D<int> read_range();

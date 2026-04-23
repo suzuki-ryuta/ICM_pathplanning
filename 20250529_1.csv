@@ -1,0 +1,13 @@
+Welcome to Sensorless ICM planner!
+----------------------------------------------
+Setting                     -> 1
+Generate Path(RRT)          -> 2
+Generate Path(Reverse RRT)  -> 3
+Generate Path(RRT-Connect)  -> 4
+Path smoothing              -> 5
+Debug                       -> 6
+Calc C_free_ICS             -> 7
+Form Closure                -> 8
+Optimization                -> 9
+----------------------------------------------
+>

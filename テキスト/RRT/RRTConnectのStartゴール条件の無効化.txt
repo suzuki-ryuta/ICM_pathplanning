@@ -1,0 +1,26 @@
+RRTConnectのStartゴール条件の無効化
+
+変更前
+GoalJudge RRTConnect::sconf_goaljudge(State3D goal, RRTNode bef, RRTNode aft)
+{
+    if(goal_sconf(goal) == GoalJudge::SGoal){
+        std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+        log << "Forward Goal\n";
+        std::cout << "Start conf reached to the goal" << std::endl;
+        return GoalJudge::SGoal;
+    }
+
+変更後
+GoalJudge RRTConnect::sconf_goaljudge(State3D goal, RRTNode bef, RRTNode aft)
+{
+    // 順探索ゴール判定を無効化
+
+    if(goal_connect(bef, aft) == GoalJudge::Connect){
+        std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+        log << "Connect Goal\n";
+        std::cout << "Connect goal!" << std::endl;
+        return GoalJudge::Connect;
+    }
+
+    return GoalJudge::NotGoal;
+}

@@ -2,6 +2,8 @@
 
 #include <vector>
 #include <string>
+#include "PointCloud.h" // 
+
 
 class HalfNode
 {
@@ -25,6 +27,7 @@ struct Node
 	Node();
 	Node(double e1, double e2, double e3, double e4, double e5, double e6);
 	Node(std::vector<double> nd);
+	Node interpolate(const Node& other, double t) const;//
 
 	double get_element(int n); 
 	double get_element(int n) const;
@@ -42,6 +45,7 @@ struct Node
 	Node operator*(double r)	const;
 	friend Node operator*(double r, const Node& other);
 	double norm(const Node& other);
+	PointCloud getCloud() const;  // 
 };
 
 std::ostream& operator<<(std::ostream& out, const Node &nd);

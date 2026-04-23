@@ -8,6 +8,9 @@
 #include "RRT.h"
 #include "TaskSet.h"
 
+#define WIDTH 20.0
+#define th_max 140.0
+
 
 double caging_func(Node node);
 
@@ -56,14 +59,14 @@ public:
 	{
 		std::srand(time(NULL));
 
-		double diffusion_width = 90;
+		double diffusion_width = WIDTH;
 		for(int i=0; i<particle_nums; ++i){
 			std::vector<double> tmpnode;
 			for(int n=0; n<Node::dof; ++n){
 				double random = (double)rand()/RAND_MAX;
-				double tmpangle = ini.get_element(n) + diffusion_width*random - (diffusion_width/2);
-				if(tmpangle>90)		tmpangle=90;
-				if(tmpangle<-90)	tmpangle=-90;
+				double tmpangle = ini.get_element(n) + diffusion_width*random - (diffusion_width/2); //ini.get_element(n) + diffusion_width*random - (diffusion_width/2);を変更	
+				if(tmpangle>th_max)		tmpangle=th_max;
+				if(tmpangle<-th_max)	tmpangle=-th_max;
 				tmpnode.push_back(tmpangle);
 			}
 			assert(tmpnode.size() == 6);
@@ -109,8 +112,8 @@ public:
 				r2 * c2 * (global_best - particles[i]);
 			particles[i] = particles[i] + velocity[i];
 			for(int n=0; n<Node::dof; ++n){
-				if(particles[i][n]>90)	particles[i][n] = 90;
-				if(particles[i][n]<-90)	particles[i][n] = -90;
+				if(particles[i][n]>th_max)	particles[i][n] = th_max;
+				if(particles[i][n]<-th_max)	particles[i][n] = -th_max;
 			}
 
 			double tmpscore = caging_func(particles[i]);
