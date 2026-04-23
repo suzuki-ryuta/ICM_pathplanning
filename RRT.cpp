@@ -903,6 +903,7 @@ NodeList RRTConnect::plan(Node ini, Node fin, State3D goal)
 	return NodeList();
 }
 
+
 void rand_init()
 {
 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
