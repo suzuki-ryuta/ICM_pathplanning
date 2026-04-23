@@ -905,25 +905,25 @@ NodeList RRTConnect::plan(Node ini, Node fin, State3D goal)
 
 
 
-// void rand_init()
-// {
-// 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-// 	auto seed = duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count() % 100000;
-// 	log << "Seed : " << seed << std::endl;
-
-// 	std::srand((unsigned int)seed);
-// 	std::cout << "Seed value is " << seed << std::endl;
-// }
-//固定seed版
 void rand_init()
 {
-    std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-    unsigned int seed = 45790;  // ★ 固定値にする（例: 0や42など）
+	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+	auto seed = duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count() % 100000;
+	log << "Seed : " << seed << std::endl;
 
-    log << "Seed : " << seed << " (fixed)" << std::endl;
-    std::srand(seed);
-    std::cout << "Seed value is " << seed << " (fixed)" << std::endl;
+	std::srand((unsigned int)seed);
+	std::cout << "Seed value is " << seed << std::endl;
 }
+//固定seed版
+// void rand_init()
+// {
+//     std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+//     unsigned int seed = 45790;  // ★ 固定値にする（例: 0や42など）
+
+//     log << "Seed : " << seed << " (fixed)" << std::endl;
+//     std::srand(seed);
+//     std::cout << "Seed value is " << seed << " (fixed)" << std::endl;
+// }
 
 Node generate_newnode()
 {
