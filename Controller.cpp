@@ -107,13 +107,13 @@ bool Controller::RintersectS(Node newnode, State3D st)
 	return shape->intersect_robot(robot);
 }
 
-bool Controller::RintersectS()
+bool Controller::RintersectS() //対象物とロボットの干渉
 {
 //	return robot->intersect(shape->get_square());
 	return shape->intersect_robot(robot);
 }
 
-bool Controller::WintersectS()
+bool Controller::WintersectS() //壁と対象物の干渉
 {
 //	return wall->intersect(shape->get_square());
 	return shape->intersect_wall(wall);

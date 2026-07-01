@@ -1,0 +1,237 @@
+// pathshortcut.cpp
+#include "pathshortcut.h"
+#include "Controller.h"
+#include "CFreeICS.h"
+#include "CFree.h"
+#include <random>
+#include <iostream>
+#include <cassert>
+
+#include <algorithm>
+#include <cmath>
+#include <chrono>      // 計算時間タイムアウト用
+#include <iterator>  // ★ これを追加！
+#include "GraphUtils.h"  // Laplacian 関連の計算モジュール
+#include <unordered_map>
+#include <fstream>   // ★追加
+
+// ★コンストラクタの実装（忘れずに）--------------------------------
+PathShortcut::PathShortcut(const NodeList& input_path, int num_trials)
+    : path(input_path), trials(num_trials) {}
+//以下，ロボット衝突チェック------------------------------------------
+bool PathShortcut::robot_update(const Node& newnode) {
+    Controller* controller = Controller::get_instance();
+    controller->robot_update(newnode);
+    return !(controller->RintersectR(newnode) || controller->RintersectW(newnode));
+}
+//---------固定------------------------------------------------------
+
+/* -------------- caging_valid は未使用だが残しておく -------------- */
+bool PathShortcut::caging_valid(PointCloud& prev, const Node& now, const Node&)
+{
+    auto cls = CFreeICS(now).extract();
+    if (cls.size() != 1) return false;
+    prev = cls[0];
+    return true;
+}
+//====方法1用=========================================================
+// Vector2D<double> compute_centroid(const PointCloud& pc) {
+//     Vector2D<double> sum(0.0, 0.0);
+//     for (int i = 0; i < pc.size(); ++i) {
+//         State3D s = pc.get(i);
+//         sum.x += s.x;
+//         sum.y += s.y;
+//     }
+//     if (pc.size() > 0) {
+//         sum.x /= pc.size();
+//         sum.y /= pc.size();
+//     }
+//     return sum;
+// }
+//====方法2用==============================================================
+// double compute_jaccard(const PointCloud& a, const PointCloud& b) {
+//     int intersection = 0;
+//     for (int i = 0; i < a.size(); ++i) {
+//         if (b.exist(a.get(i))) ++intersection;
+//     }
+//     int union_size = a.size() + b.size() - intersection;
+//     if (union_size == 0) return 0.0;
+//     return static_cast<double>(intersection) / union_size;
+// }
+// --- クラスタ識別キャッシュ用構造 ---
+std::string hash_cluster(const PointCloud& pc) {
+    std::string key;
+    for (const auto& pt : pc) {
+        key += std::to_string(pt.x) + "_" + std::to_string(pt.y) + "_" + std::to_string(pt.th) + "|";
+    }
+    return std::to_string(std::hash<std::string>{}(key));
+}
+// --- 固有値距離計算のためのキャッシュ ---
+constexpr int MAX_TRIALS = 600;
+
+NodeList PathShortcut::shortcut()
+{
+    std::mt19937 rng(0);  // 固定シードで再現性あり
+    NodeList result = path;
+
+    if (result.size() < 3) {
+        std::cout << "[INFO] path too short to shortcut.\n";
+        return result;
+    }
+
+    const double ANGLE_THRESHOLD = 5.0;  // 5度j候補用
+    // const int steps = 20;
+    const double STEP_MAX_ANGLE = 1.0;   // 1 step あたり最大角度変化 (度). 必要に応じて変更
+    const int MIN_STEPS = 2;             // 最低分割数
+
+    int successful = 0;
+
+    // ★ログファイル
+    std::ofstream log_file("timelog.txt");
+
+    for (int trial = 0; trial < trials; ++trial) {
+        if (result.size() < 3) break;
+
+        int i = rng() % (result.size() - 2);  // i = 0～size-3
+        Node n1 = result[i];
+
+        // --- j候補の抽出 ---
+        std::vector<int> j_candidates;
+        for (int j = i + 2; j < result.size(); ++j) {
+            Node n2 = result[j];
+            bool within_limit = true;
+            for (int d = 0; d < Node::dof; ++d) {
+                if (std::abs(n1[d] - n2[d]) > ANGLE_THRESHOLD) {
+                    within_limit = false;
+                    break;
+                }
+            }
+            if (within_limit) j_candidates.push_back(j);
+        }
+        if (j_candidates.empty()) continue;
+
+        std::uniform_int_distribution<> dist(0, j_candidates.size() - 1);
+        int j = j_candidates[dist(rng)];
+        Node n2 = result[j];
+
+        bool valid = true;
+        PointCloud used_cluster;
+
+        // --- n1 のクラスタ抽出 ---
+        auto t0 = std::chrono::steady_clock::now();
+        CFreeICS ics(n1);
+        auto cls = ics.extract();
+        auto t1 = std::chrono::steady_clock::now();
+        log_file << "[TIME] extract(n1): "
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
+                 << " ms\n";
+
+        if (cls.empty()) continue;
+
+        used_cluster = *std::max_element(
+            cls.begin(), cls.end(),
+            [](const PointCloud& a, const PointCloud& b) {
+                return a.size() < b.size();
+            });
+
+        // n1 の固有値計算
+        t0 = std::chrono::steady_clock::now();
+        std::vector<double> eig_used = compute_laplacian_eigenvalues(used_cluster, 5);
+        t1 = std::chrono::steady_clock::now();
+        log_file << "[TIME] eig(n1): "
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
+                 << " ms\n";
+        
+        // compute max delta angle across DOF
+        double max_dtheta = 0.0;
+        for (int d = 0; d < Node::dof; ++d) {
+            double diff = std::abs(n1[d] - n2[d]);
+            if (diff > max_dtheta) max_dtheta = diff;
+        }
+
+        // 単位に注意：もしノードがラジアンなら STEP_MAX_ANGLE をラジアンにするか変換する
+        int steps = std::max(MIN_STEPS, static_cast<int>(std::ceil(max_dtheta / STEP_MAX_ANGLE)));
+    
+    
+
+        // --- 補間ループ ---
+        t0 = std::chrono::steady_clock::now();
+        for (int k = 1; k < steps; ++k) {
+            double t = static_cast<double>(k) / steps;
+            Node mid = n1.interpolate(n2, t);
+
+            auto tA = std::chrono::steady_clock::now();
+            if (!robot_update(mid)) {
+                valid = false;
+                break;
+            }
+            auto tB = std::chrono::steady_clock::now();
+            log_file << "[TIME] robot_update: "
+                     << std::chrono::duration_cast<std::chrono::microseconds>(tB - tA).count()
+                     << " µs\n";
+
+            // --- mid のクラスタ抽出 ---
+            tA = std::chrono::steady_clock::now();
+            auto mid_cls = CFreeICS(mid).extract();
+            tB = std::chrono::steady_clock::now();
+            log_file << "[TIME] extract(mid): "
+                     << std::chrono::duration_cast<std::chrono::milliseconds>(tB - tA).count()
+                     << " ms\n";
+
+            if (mid_cls.empty()) {
+                valid = false;
+                break;
+            }
+
+            // --- クラスタを重心距離でソート ---
+            auto max_cluster = *std::max_element(
+                mid_cls.begin(), mid_cls.end(),
+                [](const PointCloud& a, const PointCloud& b) {
+                    return a.size() < b.size();
+                });
+
+            auto t_mid_eig_start = std::chrono::steady_clock::now();
+            std::vector<double> eig_mid = compute_laplacian_eigenvalues(max_cluster, 5);
+            auto t_mid_eig_end = std::chrono::steady_clock::now();
+            std::cout << "[TIME] eig(mid): "
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(
+                             t_mid_eig_end - t_mid_eig_start)
+                             .count()
+                      << " ms\n";
+
+            double dist = 0.0;
+            size_t loop_len = std::min(eig_used.size(), eig_mid.size());
+            for (size_t ei = 0; ei < loop_len; ++ei) {
+                double d = eig_used[ei] - eig_mid[ei];
+                dist += d * d;
+            }
+            dist = std::sqrt(dist);
+
+            if (dist > 0.4) {
+                std::cout << "[FAIL] spectral divergence at t=" << t
+                          << ", dist=" << dist << '\n';
+                valid = false;
+                break;
+            }
+        
+        }
+        auto t2 = std::chrono::steady_clock::now();
+        log_file << "[TIME] interpolation loop: "
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t0).count()
+                 << " ms\n";
+
+        if (valid) {
+            result.elm.erase(result.elm.begin() + i + 1, result.elm.begin() + j);
+            std::cout << "[SUCCESS] shortcut success: node " << i << " to " << j << '\n';
+            ++successful;
+        } else {
+            std::cout << "[FAIL] shortcut failed: node " << i << " to " << j << '\n';
+        }
+    }
+
+    log_file << "[INFO] shortcut result size = " << result.size()
+             << ", successful trials = " << successful << " / " << trials << '\n';
+    log_file.close();
+
+    return result;
+}

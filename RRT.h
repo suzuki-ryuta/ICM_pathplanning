@@ -25,6 +25,8 @@ private:
 	std::vector<int> garound;
 	CFO* strategy;
 	int threshold;
+	double cluster_distance_threshold;
+	double iou_threshold = 0.7;
 
 	void set_strategy(CFO* cfo);
 	bool initialize(Node ini);
@@ -36,6 +38,12 @@ private:
 	Node format_around(Node rand);
 
 	GoalJudge goal_judge(State3D goal);
+
+	int allowed_drop; // *** 追加 ***
+
+	double calculate_cluster_distance(const PointCloud& old_pc, const PointCloud& new_pc);
+	bool cluster_extent_heuristic(const PointCloud& child_region, const PointCloud& parent_region, int eps);
+	bool cluster_number_judge(const PointCloud& child_region, const PointCloud& parent_region, int eps);
 
 public:
 	RRT();
@@ -50,6 +58,8 @@ class RevRRT : public Planner
 private:
 	RRTTree tree;
 	CFO* strategy;
+	double cluster_distance_threshold;
+	double iou_threshold = 0.7;
 
 	bool initialize(Node fin);
 
@@ -61,6 +71,12 @@ private:
 	Node sampling(Node Rand);
 
 	GoalJudge goal_judge(std::vector<PointCloud> pcs);
+
+	double calculate_cluster_distance(const PointCloud& old_pc, const PointCloud& new_pc);
+	bool cluster_extent_heuristic(const PointCloud& child_region, const PointCloud& parent_region, int eps);
+	bool cluster_number_judge(const PointCloud& child_region, const PointCloud& parent_region, int eps);
+	int allowed_drop; // *** 追加 ***
+	
 public:
 	RevRRT();
 	NodeList plan(Node ini, Node fin, State3D goal);
@@ -69,11 +85,12 @@ public:
 
 
 
-class RRTConnect : public Planner
+class RRTConnect : public Planner //Plannerの継承
 {
 private:
 	RRTTree s_tree, g_tree;
 	int s_threshold;
+	double cluster_distance_threshold;
 	CFO* strategy;
 
 	bool initialize(Node ini, Node fin);
@@ -85,9 +102,14 @@ private:
 	bool caging_validation_sconf(Node node);
 	bool caging_validation_gconf(Node node);
 
+	double calculate_cluster_distance(const PointCloud& old_pc, const PointCloud& new_pc);
+
 	GoalJudge goal_sconf(State3D goal);
 	GoalJudge goal_connect(RRTNode bef, RRTNode aft);
 	GoalJudge goal_gconf(std::vector<PointCloud> cfo);
+
+	bool cluster_extent_heuristic(const PointCloud& child_region, const PointCloud& parent_region, int eps);
+	bool cluster_number_judge(const PointCloud& child_region, const PointCloud& parent_region, int eps);
 
 	NodeList make_path(GoalJudge flag);
 	NodeList make_path(GoalJudge flag, int sindex, int gindex);
@@ -95,6 +117,9 @@ private:
 
 	NodeList path_concat();
 	NodeList path_concat(int sindex, int gindex);
+
+	int allowed_drop; // *** 追加 ***
+
 
 public:
 	RRTConnect();

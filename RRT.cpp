@@ -44,9 +44,16 @@ bool RRT::dfsconfig_valid(Node newnode)
 	std::vector<PointCloud> cfo = strategy->extract(tree.back_parentRRTNode().pc(), newnode);
 
 	if((int)cfo.size() == 1){
-		RRTNode validnode(newnode, cfo[0]);
-		tree.replace(validnode);
-		return true;
+		PointCloud C_old = tree.back_parentRRTNode().pc();
+		PointCloud C_new = cfo[0];
+		double iou_val = C_old.iou(C_new);
+		if (iou_val >= iou_threshold) {
+			RRTNode validnode(newnode, cfo[0]);
+			tree.replace(validnode);
+			return true;
+		} else {
+			return false;
+		}
 	}
 	else {
 		return false;
@@ -435,7 +442,25 @@ NodeList RevRRT::plan(Node ini, Node fin, State3D goal)
 	path.reverse();
 
 	std::cout << "Debug time!\n";
-	PointCloud pre_cfo = tree.back_RRTNode().get_cfree_obj()[0];
+	// PointCloud pre_cfo = tree.back_RRTNode().get_cfree_obj()[0];
+	// Find last valid node with non-empty cfree_obj
+	PointCloud pre_cfo;
+	bool found_pre = false;
+	for(int idx = tree.size() - 1; idx >= 0; --idx){
+		if(tree.get_RRTNode(idx).is_valid){
+			auto cfo_list = tree.get_RRTNode(idx).get_cfree_obj();
+			if(!cfo_list.empty()){
+				pre_cfo = cfo_list[0];
+				found_pre = true;
+				break;
+			}
+		}
+	}
+	if(!found_pre){
+		std::cerr << "Debug: no valid cfree_obj found, returning path." << std::endl;
+		return path;
+	}
+
 	for(int i=1; i<path.size(); ++i){
 		Node check = path.get(i);
 		std::cout << check << std::endl;
@@ -490,12 +515,12 @@ bool RRTConnect::initialize(Node ini, Node fin)
 
 bool RRTConnect::sconf_update()
 {
-	Node newnode = s_tree.back_RRTNode().node;
-	if(!robot_update(newnode)){
+	Node newnode = s_tree.back_RRTNode().node; //新しいノードを取得
+	if(!robot_update(newnode)){ //干渉判定
 		s_tree.pop_back();
 		return false;
 	}
-	if(!caging_validation_sconf(newnode)){
+	if(!caging_validation_sconf(newnode)){ //ケージング成立条件とケージングマニピュレーション可能条件を同時に評価
 		s_tree.pop_back();
 		return false;
 	}
@@ -507,12 +532,12 @@ bool RRTConnect::sconf_update()
 
 bool RRTConnect::gconf_update()
 {
-	Node newnode = g_tree.back_RRTNode().node;
-	if(!robot_update(newnode)){
+	Node newnode = g_tree.back_RRTNode().node; 
+	if(!robot_update(newnode)){ //干渉判定
 		g_tree.pop_back();
 		return false;
 	}
-	if(!caging_validation_gconf(newnode)){
+	if(!caging_validation_gconf(newnode)){ //ケージング成立条件とケージングマニピュレーション可能条件を同時に評価
 		g_tree.pop_back();
 		return false;
 	}
@@ -561,9 +586,9 @@ GoalJudge RRTConnect::gconf_goaljudge(std::vector<PointCloud> cfo, RRTNode bef, 
 
 bool RRTConnect::caging_validation_sconf(Node node)
 {
-	std::vector<PointCloud> cfo = strategy->extract(s_tree.back_parentRRTNode().pc(), node);
+	std::vector<PointCloud> cfo = strategy->extract(s_tree.back_parentRRTNode().pc(), node); //cfo=c_free_obj.C(t-Δt)とC(t)の共通領域を算出
 
-	if((int)cfo.size() == 1){
+	if((int)cfo.size() == 1){ //ケージング成立条件とケージングマニピュレーション成立条件を同時に評価．C(t-Δt)とC(t)の共通領域が１つ
 		RRTNode validnode(node, cfo[0]);
 		s_tree.replace(validnode);
 		return true;
@@ -592,13 +617,13 @@ bool RRTConnect::caging_validation_gconf(Node newnode)
 		}
 	}
 
-	Node parent = g_tree.back_parentRRTNode().node;
+	Node parent = g_tree.back_parentRRTNode().node;//T_reveseを一つ遡り，ノードを取得
 	controller->robot_update(parent);
 	for(auto it = cfree_obj.begin(); it != cfree_obj.end(); ){
-		std::vector<PointCloud> prev_real_cfree = strategy->extract(*it, parent);
-		if(prev_real_cfree.size() != 1){
+		std::vector<PointCloud> prev_real_cfree = strategy->extract(*it, parent); //C(t)とC(t+Δt)の共通領域を求める
+		if(prev_real_cfree.size() != 1){ //ケージング成立条件とケージングマニピュレーション成立条件を同時に評価．C(t)とC(t+Δt)の共通領域が１つ出なければ弾く
 			del_list.push_back(*it);
-			it = cfree_obj.erase(it);
+			it = cfree_obj.erase(it); //ここで当該クラスタを弾く
 		}
 		else{
 			++it;
@@ -608,7 +633,9 @@ bool RRTConnect::caging_validation_gconf(Node newnode)
 
 	if((int)cfree_obj.size() == 0)	return false;
 	else{
-		RRTNode validnode(newnode, cfree_obj, del_list);
+		// 複数のクラスタがある場合は、最初のもののみを使用
+		PointCloud merged_cfree = cfree_obj[0];
+		RRTNode validnode(newnode, merged_cfree);
 		g_tree.replace(validnode);
 		return true;
 	}
@@ -905,22 +932,33 @@ NodeList RRTConnect::plan(Node ini, Node fin, State3D goal)
 
 
 
+// void rand_init()
+// {
+// 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+// 	auto seed = duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count() % 100000;
+// 	log << "Seed : " << seed << std::endl;
+
+// 	std::srand((unsigned int)seed);
+// 	std::cout << "Seed value is " << seed << std::endl;
+// }
+//固定seed版
 void rand_init()
 {
-	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-	auto seed = duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count() % 100000;
-	log << "Seed : " << seed << std::endl;
+    std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+    unsigned int seed = 7070;  // ★ 固定値にする（例: 0や42など）
 
-	std::srand((unsigned int)seed);
-	std::cout << "Seed value is " << seed << std::endl;
+    log << "Seed : " << seed << " (fixed)" << std::endl;
+    std::srand(seed);
+    std::cout << "Seed value is " << seed << " (fixed)" << std::endl;
 }
-
 
 Node generate_newnode()
 {
 	std::vector<double> vecrand(6);
 	for (int i = 0; i < 6; ++i) {
-		vecrand[i] = std::rand() % 181 - 90;
+		// vecrand[i] = std::rand() % 181 - 90;//+-90度の範囲でランダムな角度を生成
+		vecrand[i] = std::rand() % 281 - 140;//+-140度の範囲でランダムな角度を生成
+
 	}
 	return Node(vecrand);
 }

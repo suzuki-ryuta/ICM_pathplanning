@@ -6,6 +6,11 @@
 
 #include "Node.h"
 
+std::string g_path_cost_report;
+
+const int Node::dof;
+const int HalfNode::dof;
+
 
 HalfNode::HalfNode(double ang1, double ang2, double ang3)
 {
@@ -95,7 +100,7 @@ double Node::distance(const Node& other)
 }
 
 
-// other�Ƃ̋�����1�ɂȂ�悤��*this�𓮂����Cother�͌Œ�
+// other�Ƃ̋�����1�ɂȂ�悤��*this�𓮂����Cother�͌Œ�
 Node Node::normalize(const Node& other)
 {
 	double dist = distance(other);
@@ -167,6 +172,14 @@ double Node::norm(const Node& other)
 	return std::sqrt(sqr);
 }
 
+Node Node::interpolate(const Node& other, double t) const
+{
+	std::vector<double> new_node(6);
+	for (int i = 0; i < 6; ++i) {
+		new_node[i] = this->node[i] * (1 - t) + other.node[i] * t;
+	}
+	return Node(new_node);
+}
 
 
 
@@ -192,18 +205,54 @@ void NodeList::printIO()
 	}
 }
 
+// void NodeList::print_file(std::string fn)
+// {
+// 	std::string fp = "../ICM_Log/path/" + fn + ".csv";
+// 	std::ofstream file(fp, std::ios::out);
+
+//     if (!file.is_open()) {                          // ★ 追加 (1)
+//     	std::cerr << "[ERROR] cannot open '" << fp << "'\n";
+//     	return;
+//     } 
+// 	std::cout << "[INFO] writing "              // ← 追加②
+//               << elm.size() << " rows to " << fp << '\n';
+// 	for (int i = 0; i < (int)elm.size(); ++i) {
+// 		for (int dof = 0; dof < 6; ++dof) {
+// 			file << elm[i].get_element(dof) << ", ";
+// 		}
+// 		file << std::endl;
+// 	}
+// 	file << '\n';
+// }
+
+// ───────────────────────────────────────────────
+// Node.cpp  内  (★ NodeList::print_file の定義部分 ★)
 void NodeList::print_file(std::string fn)
 {
-	std::string fp = "../ICM_Log/path/" + fn + ".csv";
-	std::ofstream file(fp, std::ios::app);
-	for (int i = 0; i < (int)elm.size(); ++i) {
-		for (int dof = 0; dof < 6; ++dof) {
-			file << elm[i].get_element(dof) << ", ";
-		}
-		file << std::endl;
-	}
-	file.close();
+    std::string fp = "../ICM_Log/path/" + fn + ".csv";
+    std::ofstream file(fp, std::ios::out);      // ← "out" 推奨（毎回新規）
+
+    if (!file.is_open()) {                      // ← 追加①
+        std::cerr << "[ERROR] cannot open '" << fp << "'\n";
+        return;
+    }
+
+    std::cout << "[INFO] writing "              // ← 追加②
+              << elm.size() << " rows to " << fp << '\n';
+	    if (!g_path_cost_report.empty()) {
+        std::cout << g_path_cost_report;
+        g_path_cost_report.clear();
+    }
+
+    for (int i = 0; i < (int)elm.size(); ++i) { // 既存
+        for (int d = 0; d < 6; ++d) {
+            file << elm[i].get_element(d);
+            if (d < 5) file << ", ";
+        }
+        file << '\n';
+    }
 }
+
 
 void NodeList::reverse()
 {
@@ -230,4 +279,19 @@ std::ostream& operator<<(std::ostream& out, const Node &nd)
 	    << nd.get_element(2) << ", " << nd.get_element(3) << ", " 
 	    << nd.get_element(4) << ", " << nd.get_element(5) << "]"; 
 	return out; 
+}
+
+PointCloud Node::getCloud() const//
+{
+	PointCloud cloud;
+	State3D obj; // 物体の状態（位置・姿勢）をここで仮定
+
+	// 必要であれば node[] の角度から Forward Kinematics によって obj を得る
+	// 今は仮に固定値にしておく
+	obj.x = 0;
+	obj.y = 0;
+	obj.th = 0;
+
+	cloud.push(obj);
+	return cloud;
 }

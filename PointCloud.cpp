@@ -1,4 +1,5 @@
 #include <fstream>
+#include <set>
 
 #include "PointCloud.h"
 #include "Shape.h"
@@ -51,6 +52,31 @@ bool PointCloud::contain_pfar(Vector2D<int> pfar) const
 	}
 
 	return false;
+}
+
+double PointCloud::iou(const PointCloud& other) const
+{
+	int intersection = 0;
+	int union_size = 0;
+	std::set<State3D> union_set;
+
+	// 交差を計算
+	for (const auto& pt : elm) {
+		if (other.exist(pt)) {
+			intersection++;
+		}
+		union_set.insert(pt);
+	}
+
+	// 和を計算
+	for (const auto& pt : other.elm) {
+		union_set.insert(pt);
+	}
+
+	union_size = union_set.size();
+
+	if (union_size == 0) return 0.0;
+	return static_cast<double>(intersection) / union_size;
 }
 
 

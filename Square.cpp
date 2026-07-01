@@ -133,7 +133,7 @@ bool Square::intersect(Square other)
 	// but for return value, true -> intersect, false -> NOT intersect
 	bool judge = false;
 	for (int ind = 0; ind < (int)me.size(); ++ind) {
-		judge = me[ind].intersect_along_axis(you[ind]);
+		judge = me[ind].intersect_along_axis(you[ind]); //分離軸の定理
 		if (judge == true)
 			return false;
 	}

@@ -7,7 +7,7 @@
 
 
 // To unify the datatype with RRTNodeList
-// std::vector‚Ìƒ‰ƒbƒp[ƒNƒ‰ƒX
+// std::vector Ìƒ  b p [ N   X
 class NeighborList
 {
 private:
@@ -22,6 +22,8 @@ public:
 	void pop_back();
 
 	int get(int i);
+	void set(int index, int value);
+
 
 	std::vector<int> nodenum_order(int end);
 };
@@ -29,9 +31,13 @@ public:
 
 struct RRTNode
 {
-	Node node;		// ƒƒ{ƒbƒg‚U©—R“x‚ÌŠÖßŠp“x‚ÅRRT‚Ì‚Pƒm[ƒh‚É‘Š“–
-	std::vector<PointCloud> cfree_obj;		//@C_free_ics‚Ì“àC‘Ã“–‚Æ”»’è‚³‚ê‚½—Ìˆæ
-	std::vector<PointCloud> cfree_del;		//  C_free_ics‚Ì“àC‘Ã“–‚Å‚Í‚È‚¢‚Æ”»’è‚³‚ê‚½—Ìˆæ
+	Node node;		//    { b g U   R x ÌŠÖßŠp x  RRT Ì‚P m [ h É‘   
+	std::vector<PointCloud> cfree_obj;		// @C_free_ics Ì“  C Ã“  Æ”  è‚³ ê‚½ Ìˆ 
+	std::vector<PointCloud> cfree_del;		//  C_free_ics Ì“  C Ã“  Å‚Í‚È‚  Æ”  è‚³ ê‚½ Ìˆ 
+	std::vector<PointCloud> cluster_cache;	// è¦ªãƒãƒ¼ãƒ‰ä½ç½®ã§æŠ½å‡ºã•ã‚ŒãŸã‚¯ãƒ©ã‚¹ã‚¿æƒ…å ±ï¼ˆãƒªãƒ¯ã‚¤ãƒ¤æ™‚ã®æ¯”è¼ƒç”¨ï¼‰
+	
+	double cost; // ç´¯ç©ã‚³ã‚¹ãƒˆ
+	bool is_valid; // æœ‰åŠ¹ãƒ•ãƒ©ã‚°
 
 	RRTNode();
 	RRTNode(Node _n);
@@ -43,6 +49,7 @@ struct RRTNode
 
 	// getter
 	Node getNode();
+	Node getNode() const;
 	PointCloud pc();
 
 	std::vector<PointCloud> get_cfree_obj();
@@ -70,7 +77,7 @@ public:
 	int size();
 
 	RRTNode get_nearest_node(Node targ);
-	RRTNode get_RRTNode(int index);	
+	RRTNode& get_RRTNode(int index);	
 	RRTNode back_RRTNode();
 	RRTNode get_parentRRTNode(int index);
 	RRTNode back_parentRRTNode();
@@ -78,6 +85,10 @@ public:
 	int get_parent_index(int index);		
 	int get_nearest_index(Node targ);
 	int get_now_index();
+	
+	std::vector<int> get_neighbors(int index, double radius); // è¿‘å‚ãƒãƒ¼ãƒ‰ã®ã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹ã‚’å–å¾—
+
+	void set_parent_index(int index, int new_parent); // è¦ªã‚¤ãƒ³ãƒ‡ãƒƒã‚¯ã‚¹ã‚’å¤‰æ›´
 
 	NodeList generate_path();
 	NodeList generate_path(int end_index);

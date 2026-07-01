@@ -22,28 +22,28 @@ public:
 	CFreeICS(Node node)
 		:c_free_ics(), cspace(), nownode(node){}
 
-	std::vector<PointCloud> extract()
+	std::vector<PointCloud> extract() //c_free_icsの抽出
 	{
 		Controller* controller = Controller::get_instance();
 		CSpaceConfig* conf = CSpaceConfig::get_instance();	
 		controller->robot_update(nownode);
 
 		for(int i=0; i<cspace.size(); ++i){
-			State3D pos = cspace.elm[i].pt;
-			controller->shape_update(pos);
-			if(controller->RintersectS())	    cspace.toFalse(i);
-			else if(controller->WintersectS())	cspace.toFalse(i);
-			else                                cspace.toTrue(i);
+			State3D pos = cspace.elm[i].pt; //th増加終了→y増加開始，y増加終了→x増加開始
+			controller->shape_update(pos); //座標に基づいて対象物のデータを生成
+			if(controller->RintersectS())	    cspace.toFalse(i); //ロボットと干渉する座標を排除
+			else if(controller->WintersectS())	cspace.toFalse(i); //壁と干渉する座標を排除
+			else                                cspace.toTrue(i); //残った座標をCfreeとして抽出．以降ICSを抽出
 		}
 
-		Labeling* label = new Labeling(cspace);
-		int clust = label->labeling3D();
-		c_free_ics.resize(clust);
+		Labeling* label = new Labeling(cspace); //クラスター番号を管理するための配列を生成
+		int clust = label->labeling3D(); //隣接する格子点を統合し，クラスターを生成．その後クラスターの数をカウント
+		c_free_ics.resize(clust); //ICSのクラスタ数
 
 		for (int ix = 0; ix < conf->getnumx(); ++ix)
 			for (int iy = 0; iy < conf->getnumy(); ++iy)
 				for (int ith = 0; ith < conf->getnumth(); ++ith) 
-					distribute(label, ix, iy, ith);
+					distribute(label, ix, iy, ith); //格子点をクラスターに割り振る
 
 		delete label;
 
@@ -52,7 +52,7 @@ public:
 			exit_flag = 0;
 			for(int i=0; i<(*it).size(); ++i){
 				if(edge_judge((*it).elm[i])){
-					it = c_free_ics.erase(it);
+					it = c_free_ics.erase(it); //Pfarを含むクラスタを弾く
 					exit_flag = 1;
 					break;
 				}

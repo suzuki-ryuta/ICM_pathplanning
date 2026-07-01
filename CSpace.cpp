@@ -17,9 +17,9 @@ CSpaceConfig* CSpaceConfig::get_instance()
 
 CSpaceConfig::CSpaceConfig()
 	:top(),
-     bottom(read_bottom()), 
-	 range(read_range()),
-	 symangle(read_symangle())
+     bottom(read_bottom()),  //各パラメータの最小値を読み込む
+	 range(read_range()), //各パラメータの離散間隔を読み込む
+	 symangle(read_symangle()) //対象物の回転対称角度を読み込む
 {
 	bp::ptree pt;
 	read_ini("config/SpaceConfig.ini", pt);

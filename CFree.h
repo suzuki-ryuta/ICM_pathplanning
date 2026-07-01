@@ -114,6 +114,10 @@ public:
 		CSpaceConfig* cs = CSpaceConfig::get_instance();
 		if(pt.th < 0)	            pt.th = pt.th + (cs->gettop().th + cs->getrange().z);
 		if(pt.th > cs->gettop().th)	pt.th = pt.th - (cs->gettop().th + cs->getrange().z);
+		if(pt.x < cs->getbottom().x || pt.x > cs->gettop().x) return false;
+		if(pt.y < cs->getbottom().y || pt.y > cs->gettop().y) return false;
+		if(pt.th < cs->getbottom().th || pt.th > cs->gettop().th) return false;
+
 		int index = target.coord_to_index(pt);
 		check_ifexist(pt);
 
