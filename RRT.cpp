@@ -2,12 +2,14 @@
 #include<iostream>
 #include<chrono>
 #include<climits>
+#include<cstdlib>
 
 #include "RRT.h"
 #include "CFreeICS.h"
 #include "Robot.h"
 #include "CFree.h"
 #include "pathsmooth.h"
+#include "Profiler.h"
 
 
 int origin = -1;
@@ -21,11 +23,19 @@ void RRT::set_strategy(CFO* cfo)
 
 bool RRT::initialize(Node ini)
 {
+	PROFILE_SCOPE("RRT.initialize.total");
 	tree.push_back(ini, origin);
 	CFreeICS ics(ini);
 	std::cout << ini << std::endl;
-	if (!robot_update(ini))	return false;
-	std::vector<PointCloud> init_CFree = ics.extract();
+	{
+		PROFILE_SCOPE("RRT.initialize.robot_update");
+		if (!robot_update(ini))	return false;
+	}
+	std::vector<PointCloud> init_CFree;
+	{
+		PROFILE_SCOPE("RRT.initialize.ICS_extract");
+		init_CFree = ics.extract();
+	}
 	if(init_CFree.size() == 0)	return false;
 	print_ICSs(init_CFree);
 
@@ -41,12 +51,21 @@ bool RRT::initialize(Node ini)
 
 bool RRT::dfsconfig_valid(Node newnode)
 {
-	std::vector<PointCloud> cfo = strategy->extract(tree.back_parentRRTNode().pc(), newnode);
+	PROFILE_SCOPE("RRT.validation.total");
+	std::vector<PointCloud> cfo;
+	{
+		PROFILE_SCOPE("RRT.validation.CFO_extract");
+		cfo = strategy->extract(tree.back_parentRRTNode().pc(), newnode);
+	}
 
 	if((int)cfo.size() == 1){
 		PointCloud C_old = tree.back_parentRRTNode().pc();
 		PointCloud C_new = cfo[0];
-		double iou_val = C_old.iou(C_new);
+		double iou_val = 0.0;
+		{
+			PROFILE_SCOPE("RRT.validation.IoU_overlap");
+			iou_val = C_old.iou(C_new);
+		}
 		if (iou_val >= iou_threshold) {
 			RRTNode validnode(newnode, cfo[0]);
 			tree.replace(validnode);
@@ -64,6 +83,7 @@ bool RRT::dfsconfig_valid(Node newnode)
 
 Node RRT::sampling(Node Rand)
 {
+	PROFILE_SCOPE("RRT.sampling.total");
 	static int loop = 0;
 	loop++;
 	Node newnode;
@@ -108,6 +128,7 @@ Node RRT::format_around(Node rand)
 
 GoalJudge RRT::goal_judge(State3D goal)
 {
+	PROFILE_SCOPE("RRT.goal_judge");
 	PointCloud pc = tree.back_RRTNode().pc();
     const double around_rate = 1.5;
     double max_dist = DBL_MIN;
@@ -185,6 +206,7 @@ RRT::RRT()
 
 NodeList RRT::plan(Node ini, Node fin, State3D goal)
 {
+	ScopedProfiler::reset();
 	rand_init();
 
 	if (!initialize(ini)) {
@@ -192,6 +214,8 @@ NodeList RRT::plan(Node ini, Node fin, State3D goal)
 		return NodeList();
 	}
 	auto start = std::chrono::system_clock::now();
+	const char* profile_limit_env = std::getenv("RRT_PROFILE_ITER_LIMIT");
+	const int profile_iter_limit = profile_limit_env ? std::atoi(profile_limit_env) : 0;
 
 	while (1)
 	{
@@ -199,11 +223,20 @@ NodeList RRT::plan(Node ini, Node fin, State3D goal)
 		++i;
 		if (i > 300000)	exit(5963);
 		// Random sampling and format
-		Node Rand = generate_newnode();
+		Node Rand;
+		{
+			PROFILE_SCOPE("RRT.generate_newnode");
+			Rand = generate_newnode();
+		}
 		Node newnode = sampling(Rand);
 
 		// Validation
-		if (!robot_update(newnode)){
+		bool robot_ok = false;
+		{
+			PROFILE_SCOPE("RRT.robot_update");
+			robot_ok = robot_update(newnode);
+		}
+		if (!robot_ok){
 			tree.pop_back();
 			continue;
 		}
@@ -216,12 +249,19 @@ NodeList RRT::plan(Node ini, Node fin, State3D goal)
 		GoalJudge flag = goal_judge(goal);
 		if (flag == GoalJudge::MiddleGoal)	add_garound();
 		if (flag == GoalJudge::Goal)	break;
+		if (profile_iter_limit > 0 && i >= profile_iter_limit) {
+			std::cout << "[PROFILE] stopped at iteration " << i
+			          << " by RRT_PROFILE_ITER_LIMIT=" << profile_iter_limit << std::endl;
+			break;
+		}
 	}
 
 	auto end = std::chrono::system_clock::now();
 	auto dur = end - start;
 	auto sec = std::chrono::duration_cast<std::chrono::seconds>(dur).count();
 	std::cout << "Elapsed time [s] :";	std::cout << sec << std::endl;
+	const double total_ms = std::chrono::duration<double, std::milli>(dur).count();
+	ScopedProfiler::report("Forward RRT", total_ms);
 
 	return tree.generate_path();
 }

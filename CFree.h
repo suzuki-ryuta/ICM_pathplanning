@@ -5,6 +5,7 @@
 #include "CSpace.h"
 #include "Controller.h"
 #include "CFreeICS.h"
+#include "Profiler.h"
 
 class CFO
 {
@@ -35,12 +36,21 @@ public:
 	~RasterCFO(){};
 
 	std::vector<PointCloud> extract(PointCloud prev, Node newnode){
+		PROFILE_SCOPE("RasterCFO.extract.total");
 		init();
 		CFreeICS cfi(newnode);
-		c_freeobj = cfi.extract();
+		{
+			PROFILE_SCOPE("RasterCFO.ICS_extract");
+			c_freeobj = cfi.extract();
+		}
 
 		for(auto itr = c_freeobj.begin(); itr != c_freeobj.end();){
-			if(prev.overlap(*itr)){
+			bool has_overlap = false;
+			{
+				PROFILE_SCOPE("RasterCFO.cluster_overlap");
+				has_overlap = prev.overlap(*itr);
+			}
+			if(has_overlap){
 				++itr;	continue;
 			}
 			itr = c_freeobj.erase(itr);
@@ -81,10 +91,17 @@ public:
 
 	std::vector<PointCloud> extract(PointCloud prev, Node newnode)
 	{
+		PROFILE_SCOPE("DfsCFO.extract.total");
 		init();
-		previous.assign(prev);
+		{
+			PROFILE_SCOPE("DfsCFO.previous_assign");
+			previous.assign(prev);
+		}
 		Controller* controller = Controller::get_instance();
-		controller->robot_update(newnode);	
+		{
+			PROFILE_SCOPE("DfsCFO.robot_update");
+			controller->robot_update(newnode);	
+		}
 		// robot condition is updated, below we can use 
 		// no argument function in Controller.h like RintersectS().
 
@@ -95,9 +112,22 @@ public:
 
 			target.init();
 									
-			controller->shape_update(previous.get_pt(i));
-			if (controller->RintersectS())	continue;
-			if (controller->WintersectS())	continue;
+			{
+				PROFILE_SCOPE("DfsCFO.seed_shape_update");
+				controller->shape_update(previous.get_pt(i));
+			}
+			bool robot_hit = false;
+			{
+				PROFILE_SCOPE("DfsCFO.seed_RintersectS");
+				robot_hit = controller->RintersectS();
+			}
+			if (robot_hit)	continue;
+			bool wall_hit = false;
+			{
+				PROFILE_SCOPE("DfsCFO.seed_WintersectS");
+				wall_hit = controller->WintersectS();
+			}
+			if (wall_hit)	continue;
 
 			c_dfs.resize(c_dfs.size() + 1);
 			int index = target.coord_to_index(previous.get_pt(i));
@@ -111,6 +141,7 @@ public:
 
 	bool preprocess(State3D& pt)
 	{
+		PROFILE_SCOPE("DfsCFO.preprocess");
 		CSpaceConfig* cs = CSpaceConfig::get_instance();
 		if(pt.th < 0)	            pt.th = pt.th + (cs->gettop().th + cs->getrange().z);
 		if(pt.th > cs->gettop().th)	pt.th = pt.th - (cs->gettop().th + cs->getrange().z);
@@ -128,6 +159,7 @@ public:
 
 	void explore2(State3D point)
 	{	
+		PROFILE_SCOPE("DfsCFO.explore2.total");
 		Controller* controller = Controller::get_instance();
 		for (int i = 1; i <= 26; ++i) {
 			std::stack<State3D> stack;
@@ -135,17 +167,40 @@ public:
 			assert(stack.size() == 0);
 
 			if (!preprocess(orig))	continue;
-			if (edge_judge(orig)) {
+			bool is_edge = false;
+			{
+				PROFILE_SCOPE("DfsCFO.edge_judge");
+				is_edge = edge_judge(orig);
+			}
+			if (is_edge) {
 				c_del.push_back(c_dfs.back());
 				c_dfs.pop_back();
 				return;
 			}
 
-			controller->shape_update(orig);	// shape is updated
-			if (controller->RintersectS())	continue;
-			if (controller->WintersectS())	continue;
+			{
+				PROFILE_SCOPE("DfsCFO.shape_update");
+				controller->shape_update(orig);	// shape is updated
+			}
+			bool robot_hit = false;
+			{
+				PROFILE_SCOPE("DfsCFO.RintersectS");
+				robot_hit = controller->RintersectS();
+			}
+			if (robot_hit)	continue;
+			bool wall_hit = false;
+			{
+				PROFILE_SCOPE("DfsCFO.WintersectS");
+				wall_hit = controller->WintersectS();
+			}
+			if (wall_hit)	continue;
 
-			if(cdel_judge(orig)){
+			bool cdel_hit = false;
+			{
+				PROFILE_SCOPE("DfsCFO.cdel_cluster_overlap");
+				cdel_hit = cdel_judge(orig);
+			}
+			if(cdel_hit){
 				c_del.push_back(c_dfs.back());
 				c_dfs.pop_back();
 				return;
@@ -162,17 +217,40 @@ public:
 					State3D next = move(pt, i);
 
 					if (!preprocess(next))	continue;
-					if (edge_judge(next)) {
+					bool next_is_edge = false;
+					{
+						PROFILE_SCOPE("DfsCFO.edge_judge");
+						next_is_edge = edge_judge(next);
+					}
+					if (next_is_edge) {
 						c_del.push_back(c_dfs.back());
 						c_dfs.pop_back();
 						return;
 					}
 
-					controller->shape_update(next);	// shape is updated
-					if (controller->RintersectS())	continue;
-					if (controller->WintersectS())	continue;
+					{
+						PROFILE_SCOPE("DfsCFO.shape_update");
+						controller->shape_update(next);	// shape is updated
+					}
+					bool next_robot_hit = false;
+					{
+						PROFILE_SCOPE("DfsCFO.RintersectS");
+						next_robot_hit = controller->RintersectS();
+					}
+					if (next_robot_hit)	continue;
+					bool next_wall_hit = false;
+					{
+						PROFILE_SCOPE("DfsCFO.WintersectS");
+						next_wall_hit = controller->WintersectS();
+					}
+					if (next_wall_hit)	continue;
 
-					if(cdel_judge(next)){
+					bool next_cdel_hit = false;
+					{
+						PROFILE_SCOPE("DfsCFO.cdel_cluster_overlap");
+						next_cdel_hit = cdel_judge(next);
+					}
+					if(next_cdel_hit){
 						c_del.push_back(c_dfs.back());
 						c_dfs.pop_back();
 						return;
@@ -223,6 +301,7 @@ public:
 
 	void check_ifexist(State3D st)	// If st exists, convert to "true" correspond PointMark of previous C_free_obj
 	{
+		PROFILE_SCOPE("DfsCFO.previous_overlap_check");
 		for (int i = 0; i < (int)previous.size(); ++i) {
 			if (previous.get_pt(i) == st) {
 				previous.toTrue(i);
@@ -240,6 +319,7 @@ public:
 //	If 'st' is a part, return true
 	bool cdel_judge(State3D st)
 	{
+		PROFILE_SCOPE("DfsCFO.cdel_judge.inner");
 		for(int i=0; i<(int)c_del.size(); ++i){
 			if(c_del[i].exist(st))	return true;
 		}
