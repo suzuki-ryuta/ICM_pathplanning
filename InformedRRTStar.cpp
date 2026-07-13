@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 
@@ -106,6 +107,14 @@ namespace {
 
     double node_distance(Node a, Node b) {
         return a.distance(b);
+    }
+
+    void append_selected_path_log(const std::string& planner_name, int node_count, double total_cost)
+    {
+        std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+        log << std::fixed << std::setprecision(6);
+        log << planner_name << " selected path nodes : " << node_count << std::endl;
+        log << planner_name << " selected path cost : " << total_cost << std::endl;
     }
 
     Node sample_toward(Node from, Node to, double t = 0.5) {
@@ -598,8 +607,6 @@ InformedRRTStarGoalJudge RevInformedRRTStar::goal_judge(std::vector<PointCloud> 
     for (int i = 0; i < (int)pcs.size(); ++i) {
         if (maxi < pcs[i].size()) maxi = pcs[i].size();
         if (pcs[i].size() > nu) {
-            std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-            log << "Reverse nu : " << nu << std::endl;
             return InformedRRTStarGoalJudge::Goal;
         }
     }
@@ -1032,8 +1039,18 @@ NodeList InformedRRTStarConnect::plan(Node ini, Node fin, State3D goal)
             s_tree.push_back(FNode(newnode, parent_index, new_cost, chosen_pc));
             rewire_s_neighbors((int)s_tree.size() - 1, near_ids);
 
-            InformedRRTStarGoalJudge flag = sconf_goaljudge(goal, (int)s_tree.size() - 1, nearest_g_index(newnode));
-            if (flag != InformedRRTStarGoalJudge::NotGoal) return make_path(flag, (int)s_tree.size() - 1, nearest_g_index(newnode));
+            int sindex = (int)s_tree.size() - 1;
+            int gindex = nearest_g_index(newnode);
+            InformedRRTStarGoalJudge flag = sconf_goaljudge(goal, sindex, gindex);
+            if (flag != InformedRRTStarGoalJudge::NotGoal) {
+                NodeList selected_path = make_path(flag, sindex, gindex);
+                double selected_cost = std::numeric_limits<double>::infinity();
+                if (flag == InformedRRTStarGoalJudge::SGoal) selected_cost = path_cost_s(sindex);
+                else if (flag == InformedRRTStarGoalJudge::GGoal) selected_cost = path_cost_g(gindex);
+                else if (flag == InformedRRTStarGoalJudge::Connect) selected_cost = path_cost_s(sindex) + edge_cost(s_tree[sindex].node, g_tree[gindex].node) + path_cost_g(gindex);
+                append_selected_path_log("InformedRRTStarConnect", selected_path.size(), selected_cost);
+                return selected_path;
+            }
         } else {
             Node newnode = sample_toward(g_tree[nearest_g_index(Rand)].node, Rand, 0.5);
             if (!robot_update(newnode)) continue;
@@ -1047,9 +1064,18 @@ NodeList InformedRRTStarConnect::plan(Node ini, Node fin, State3D goal)
             g_tree.push_back(RNode(newnode, parent_index, new_cost, out_obj, out_del));
             rewire_g_neighbors((int)g_tree.size() - 1, near_ids);
 
-            InformedRRTStarGoalJudge flag = gconf_goaljudge(g_tree.back().cfree_obj, nearest_s_index(newnode), (int)g_tree.size() - 1);
-            if (flag != InformedRRTStarGoalJudge::NotGoal) return make_path(flag, nearest_s_index(newnode), (int)g_tree.size() - 1);
+            int sindex = nearest_s_index(newnode);
+            int gindex = (int)g_tree.size() - 1;
+            InformedRRTStarGoalJudge flag = gconf_goaljudge(g_tree.back().cfree_obj, sindex, gindex);
+            if (flag != InformedRRTStarGoalJudge::NotGoal) {
+                NodeList selected_path = make_path(flag, sindex, gindex);
+                double selected_cost = std::numeric_limits<double>::infinity();
+                if (flag == InformedRRTStarGoalJudge::SGoal) selected_cost = path_cost_s(sindex);
+                else if (flag == InformedRRTStarGoalJudge::GGoal) selected_cost = path_cost_g(gindex);
+                else if (flag == InformedRRTStarGoalJudge::Connect) selected_cost = path_cost_s(sindex) + edge_cost(s_tree[sindex].node, g_tree[gindex].node) + path_cost_g(gindex);
+                append_selected_path_log("InformedRRTStarConnect", selected_path.size(), selected_cost);
+                return selected_path;
+            }
         }
     }
 }
-

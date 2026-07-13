@@ -2,6 +2,7 @@
 #include<chrono>
 #include<climits>
 #include<cmath>
+#include<fstream>
 #include<iomanip>
 #include<limits>
 #include<sstream>
@@ -111,6 +112,23 @@ double configuration_distance(const Node& q1, const Node& q2)
 		squared_distance += diff * diff;
 	}
 	return std::sqrt(squared_distance);
+}
+
+void append_selected_path_log(const std::string& planner_name, int node_count, double total_cost)
+{
+	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+	log << std::fixed << std::setprecision(6);
+	log << planner_name << " selected path nodes : " << node_count << std::endl;
+	log << planner_name << " selected path cost : " << total_cost << std::endl;
+}
+
+double nodelist_cost(const NodeList& path)
+{
+	double cost = 0.0;
+	for(int i = 1; i < path.size(); ++i){
+		cost += weighted_distance(path.get(i - 1), path.get(i));
+	}
+	return cost;
 }
 
 //-----------------------------
@@ -394,9 +412,13 @@ NodeList RRTStar::plan(Node ini, Node fin, State3D goal)
 	int selected_goal_index = select_min_goal_index();
 	g_path_cost_report = make_goal_cost_report(selected_goal_index);
 	if(selected_goal_index >= 0){
-		return tree.generate_path(selected_goal_index);
+		NodeList selected_path = tree.generate_path(selected_goal_index);
+		append_selected_path_log("RRTStar", selected_path.size(), nodelist_cost(selected_path));
+		return selected_path;
 	}
-	return tree.generate_path();
+	NodeList selected_path = tree.generate_path();
+	append_selected_path_log("RRTStar", selected_path.size(), nodelist_cost(selected_path));
+	return selected_path;
 }
 
 
@@ -639,8 +661,6 @@ GoalJudge RevRRTStar::goal_judge(std::vector<PointCloud> pcs)
 	for(int i=0; i<(int)pcs.size(); ++i){
 		if(maxi < pcs[i].size())	maxi = pcs[i].size();
 		if(pcs[i].size() > nu){
-			std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-			log << "Reverse nu : " << nu << std::endl;
 			std::cout << "num: " << pcs[i].size() << std::endl;
 
 			return GoalJudge::Goal;
@@ -751,6 +771,8 @@ NodeList RevRRTStar::plan(Node ini, Node fin, State3D goal)
 			path.reverse();
 		}
 	}
+
+	append_selected_path_log("RevRRTStar", path.size(), nodelist_cost(path));
 
 	std::cout << "Debug time!\n";
 	// Find the path head node in the tree and use its actual cfree_obj for debug verification.
@@ -1138,8 +1160,6 @@ GoalJudge RRTStarConnect::goal_gconf(std::vector<PointCloud> cfo)
 	for(int i=0; i<(int)cfo.size(); ++i){
 		if(maxi < cfo[i].size())	maxi = cfo[i].size();
 		if(cfo[i].size() > nu){
-			std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-			log << "Reverse nu : " << nu << std::endl;
 			return GoalJudge::GGoal;
 		}
 	}
@@ -1519,7 +1539,12 @@ NodeList RRTStarConnect::plan(Node ini, Node fin, State3D goal)
 	int selected_candidate = select_min_goal_candidate_index();
 	g_path_cost_report = make_goal_cost_report(selected_candidate);
 	if(selected_candidate >= 0){
-		return goal_candidate_path(goal_candidates[selected_candidate]);
+		NodeList selected_path = goal_candidate_path(goal_candidates[selected_candidate]);
+		double selected_cost = goal_candidate_cost(goal_candidates[selected_candidate].flag,
+		                                           goal_candidates[selected_candidate].s_index,
+		                                           goal_candidates[selected_candidate].g_index);
+		append_selected_path_log("RRTStarConnect", selected_path.size(), selected_cost);
+		return selected_path;
 	}
 	
 	return NodeList();

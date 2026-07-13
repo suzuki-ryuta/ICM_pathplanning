@@ -8,8 +8,12 @@ SRCS += Robot.cpp RRTTree.cpp Shape.cpp Square.cpp Wall.cpp LShape.cpp TaskSet.c
 OBJS = $(SRCS:.cpp=.o)
 
 CXX = g++
-#CXXFLAGS = -g -Wall 
-CXXFLAGS = -Wall -O0 -g -fno-inline -fno-omit-frame-pointer -mtune=native -march=native -mfpmath=both
+#CXXFLAGS = -g -Wall
+#以下実行用
+CXXFLAGS = -O3 -Wall -flto=auto -march=native -mtune=native
+#以下，デバック用
+#CXXFLAGS = -Wall -O0 -g -fno-inline -fno-omit-frame-pointer -mtune=native -march=native -mfpmath=both
+#ここまで
 INCDIR = -I/usr/include -I.
 
 #LIBDIR = -L/usr/local/lib
@@ -21,10 +25,16 @@ all: $(TARGET)
 	$(CXX) $(CXXFLAGS) $(INCDIR) -o $@ -c $<
 
 $(TARGET): $(OBJS)
-	$(CXX) -o $@ $^ $(LIBDIR) $(LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBDIR) $(LIBS)
+#以下以前
+# 	$(CXX) -o $@ $^ $(LIBDIR) $(LIBS)
 
 clean:
-	rm -f *.o
+	rm -f *.o $(TARGET)
+#以下以前
+# 	rm -f *.o
 
 depend:
 	makedepend $(INCDIR) $(SRCS)
+
+# CXXFLAGS = -flto -Wall -O3 -mtune=native -march=native -mfpmath=both

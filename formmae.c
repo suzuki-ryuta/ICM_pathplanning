@@ -1,5 +1,3 @@
-#pragma warning(disable : 4996) // C4996の警告を無視する
-
 #include <stdio.h>   // 標準ヘッダー
 #include <windows.h> // Windows API用ヘッダー
 #include <stdlib.h>  //読み込み用のヘッダファイル
@@ -21,7 +19,6 @@
 #define ADDR_OPERATING_MODE  11       // Operating Mode のアドレス（モデルによって異なる）
 #define POSITION_CONTROL_MODE 3       // 位置制御モードの番号
 #define ADDR_TORQUE_ENABLE  64    // トルクON/OFFのアドレス
-#define ADDR_HOMING_OFFSET  20     // オフセット調整（内部角度ずれ修正）
 #define TORQUE_ENABLE  1          // トルクON
 #define TORQUE_DISABLE  0         // トルクOFF
 #define Min_ID 1               // モータIDの最小値
@@ -30,68 +27,36 @@
 #define ARRAY_NMAX 1000         // ノードの最大許容値。動作計画はノードがこの数値未満になるまで行う
 #define DEG_TO_DXL_VALUE(deg) ((int)((deg + 180.0) * 4096.0 / 360.0))  //度数からDynamixelの指令値に変換するマクロ
 #define DXL_VALUE_TO_DEG(data) ((double)((data) * 360.0 / 4096.0 - 180.0))  // Dynamixelからの取得値を度数に変換するマクロ
-#define JAMMING_ANGLE_THRESHOLD 10.0 //ジャミング判定の閾値
+#define JAMMING_ANGLE_THRESHOLD 9.0 //ジャミング判定の閾値
 
 #define VERO 5
 #define N 1 // 動作繰り返し数
 
-//追加
-#define ADDR_PROFILE_ACCELERATION 108
-#define ADDR_PROFILE_VELOCITY     112
-#define BACKTRACK_NODES 5   // ジャミング継続時に戻るノード数（必要に応じて調整）
-#define CSV_PROFILE_VELOCITY 150
-#define CSV_PROFILE_ACCELERATION 50
-#define OPEN_PROFILE_VELOCITY 30
-#define OPEN_PROFILE_ACCELERATION 10
-#define OPEN_REACHED_THRESHOLD_DEG 2.0
-#define OPEN_MOVE_TIMEOUT_MS 30000
-#define OPEN_MOVE_CHECK_INTERVAL_MS 50
-
+#pragma warning(disable : 4996) // C4996の警告を無視する
 
 double path[ARRAY_NMAX][NUM];
 int whole_node_count = 0;
 double MAE = 1.0; //最終姿勢時の平均絶対誤差を格納するためのグローバル変数
 
-//[追加]
-void set_profile_params(int port_num, uint8_t id, int vel, int acc)
-{
-    write4ByteTxRx(port_num, PROTOCOL_VERSION, id, ADDR_PROFILE_VELOCITY, vel);
-    write4ByteTxRx(port_num, PROTOCOL_VERSION, id, ADDR_PROFILE_ACCELERATION, acc);
-
-    int dxl_comm_result = getLastTxRxResult(port_num, PROTOCOL_VERSION);
-    if (dxl_comm_result != COMM_SUCCESS) {
-        fprintf(stderr, "Failed to set profile for ID %d\n", id);
-    }
-}
-
-void set_profile_params_all(int port_num, const uint8_t* ids, int num, int vel, int acc)
-{
-    for (int i = 0; i < num; i++)
-    {
-        set_profile_params(port_num, ids[i], vel, acc);
-    }
-}
-
-
 // 角度指令関数
-void setangles(int port_num, const uint8_t* ids, const double* angles)
+void setangles(int port_num, const uint8_t* ids, const double* angles) 
 {
     // Sync Writeインスタンスの作成
     int group_num = groupSyncWrite(port_num, PROTOCOL_VERSION, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
-    if (group_num == -1)
+    if (group_num == -1) 
     {
         fprintf(stderr, "Failed to create Sync Write instance\n");
         return;
     }
 
-    for (int i = 0; i < NUM; i++)
+    for (int i = 0; i < NUM; i++) 
     {
         // 目標角度を取得し、Dynamixelの指令値に変換
         uint32_t param_goal_position = DEG_TO_DXL_VALUE(angles[i]); // 目標角度をDynamixelの指令値に変換
         printf("SET VALUE is %d\n", param_goal_position);
 
         // モータに目標位置を追加
-        if (groupSyncWriteAddParam(group_num, ids[i], param_goal_position, LEN_GOAL_POSITION) != 1)
+        if (groupSyncWriteAddParam(group_num, ids[i], param_goal_position, LEN_GOAL_POSITION) != 1) 
         {
             fprintf(stderr, "Failed to add parameter for ID: %d\n", ids[i]);
             return;
@@ -100,7 +65,7 @@ void setangles(int port_num, const uint8_t* ids, const double* angles)
 
     // すべての目標位置を一斉送信
     groupSyncWriteTxPacket(group_num);
-
+    
     // エラーチェック
     int dxl_comm_result = getLastTxRxResult(port_num, PROTOCOL_VERSION);
     if (dxl_comm_result != COMM_SUCCESS)
@@ -165,39 +130,63 @@ void getangles(int port_num, const uint8_t* ids, double* angles)
     groupSyncReadClearParam(group_num);
 }
 
-// [変更]角度指令関数（同期移動・移動時間指定付き）
-void setanglestime(int port_num, const uint8_t* ids, const double* angles, double time_sec)
+// 角度指令関数（移動時間指定付き）
+void setanglestime(int port_num, const uint8_t* ids, const double* angles, double time_sec) 
 {
-    (void)time_sec;
-
+    // Sync Writeインスタンスの作成
     int group_num = groupSyncWrite(port_num, PROTOCOL_VERSION, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
-    if (group_num == -1) {
+    if (group_num == -1) 
+    {
         fprintf(stderr, "Failed to create Sync Write instance\n");
         return;
     }
 
-    for (int i = 0; i < NUM; i++) {
-        uint32_t param_goal_position = DEG_TO_DXL_VALUE(angles[i]);
+    // 現在の位置を取得するための変数
+    double current_positions[NUM];
 
-        if (groupSyncWriteAddParam(group_num, ids[i], param_goal_position, LEN_GOAL_POSITION) != 1) {
-            fprintf(stderr, "Failed to add parameter for ID: %d\n", ids[i]);
-            groupSyncWriteClearParam(group_num);
+    // 現在の位置を取得
+    getangles(port_num, ids, current_positions);
+
+    // 指令ステップ数の設定（例として100ステップ）
+    int steps = 100;
+    double step_time = (time_sec / steps) * 1000; // ミリ秒に変換
+
+    for (int step = 0; step <= steps; step++) {
+        // Sync Write用のグループをクリア
+        groupSyncWriteClearParam(group_num);
+
+        for (int i = 0; i < NUM; i++) 
+        {
+            // 現在のステップにおける目標角度を計算
+            double intermediate_angle = current_positions[i] + (angles[i] - current_positions[i]) * (double)step / steps;
+            uint32_t param_goal_position = DEG_TO_DXL_VALUE(intermediate_angle);
+
+            // モータに目標位置を追加
+            if (groupSyncWriteAddParam(group_num, ids[i], param_goal_position, LEN_GOAL_POSITION) != 1) 
+            {
+                fprintf(stderr, "Failed to add parameter for ID: %d\n", ids[i]);
+                return;
+            }
+        }
+
+        // すべての目標位置を一斉送信
+        groupSyncWriteTxPacket(group_num);
+
+        // エラーチェック
+        int dxl_comm_result = getLastTxRxResult(port_num, PROTOCOL_VERSION);
+        if (dxl_comm_result != COMM_SUCCESS) 
+        {
+            fprintf(stderr, "Failed to transmit Sync Write packet: %d\n", dxl_comm_result);
             return;
         }
+
+        // 次のステップまで待機
+        Sleep(step_time);
     }
 
-    // 目標角度だけ送信し，移動はモータ側のProfileに任せる
-    groupSyncWriteTxPacket(group_num);
-    int dxl_comm_result = getLastTxRxResult(port_num, PROTOCOL_VERSION);
-    if (dxl_comm_result != COMM_SUCCESS) {
-        fprintf(stderr, "Failed to transmit Sync Write packet: %d\n", dxl_comm_result);
-        groupSyncWriteClearParam(group_num);
-        return;
-    }
-
+    // グループのパラメータをクリア
     groupSyncWriteClearParam(group_num);
 }
-
 
 
 
@@ -210,17 +199,17 @@ void setanglestime(int port_num, const uint8_t* ids, const double* angles, doubl
  *		0以上			成功
  *		0未満			エラー
 */
-void read_path_from_file(char* inp)
+void read_path_from_file()
 {
-    FILE* fp;
-    char str[1000] = { 0 };
-    //char input[1000];
+    FILE *fp;
+    char str[1000] = {0};
+    char input[1000];
     char filename[1004];
 
     //指定したファイルを読み込む
     printf("type filename\n");
-    scanf("%s", inp);
-    sprintf(filename, "%s.csv", inp);
+    scanf("%s", input);
+    sprintf(filename, "%s.csv", input);
     fp = fopen((filename), "r");
     if (fp == NULL)
     {
@@ -231,10 +220,10 @@ void read_path_from_file(char* inp)
     while (fgets(str, ARRAY_NMAX, fp) != NULL)
     {
         path[whole_node_count][0] = -atof(strtok(str, ","));
-        path[whole_node_count][1] = atof(strtok(NULL, ","));
+        path[whole_node_count][1] =  atof(strtok(NULL, ","));
         path[whole_node_count][2] = -atof(strtok(NULL, ","));
         path[whole_node_count][3] = -atof(strtok(NULL, ","));
-        path[whole_node_count][4] = atof(strtok(NULL, ","));
+        path[whole_node_count][4] =  atof(strtok(NULL, ","));
         path[whole_node_count][5] = -atof(strtok(NULL, ","));
         whole_node_count++;
     }
@@ -245,84 +234,29 @@ void read_path_from_file(char* inp)
 /*----------------------------------------------------------------------------*/
 /*
  *  サーボに，目標の角度コマンドを送信するための関数
- *
+ * 
 */
-//[変更]
+
+
 void send_command_to_servos(int port_num, const uint8_t* ids, int num, int current_node_index)
 {
-    if (current_node_index == 0) {
+    if (current_node_index == 0)
+    {
+        //サーボを動かす
         setanglestime(port_num, ids, &path[current_node_index][0], 1.0);
     }
-    else {
-        // ノード間の角度変化の最大値を計算
-        double max_delta = 0.0;
-        for (int i = 0; i < NUM; i++) {
-            double diff = fabs(path[current_node_index][i] - path[current_node_index - 1][i]);
-            if (diff > max_delta) max_delta = diff;
-        }
-
-        // 移動時間を決定（高ければ速くなる．例: 基準速度400 deg/s）
-        double time_sec = max_delta / 400.0;
-        //if (time_sec > 2.0)time_sec = 2.0;
-
-        setanglestime(port_num, ids, &path[current_node_index][0], time_sec);
-    }
-}
-//void send_command_to_servos(int port_num, const uint8_t* ids, int num, int current_node_index)
-//{
-//    if (current_node_index == 0)
-//    {
-//        //サーボを動かす
-//        setanglestime(port_num, ids, &path[current_node_index][0], 1.0);
-//    }
-//    else if (current_node_index + 1 == whole_node_count)//csvの追加手入力角度（大きな移動）用
-//    {
-//        //サーボを動かす
-//        setanglestime(port_num, ids, &path[current_node_index][0], 1.0);
-//    }
-//    else
-//    {
-//        //サーボを動かす
-//        setangles(port_num, ids, &path[current_node_index][0]);
-//    }
-//
-//    return;
-//}
-
-int wait_until_angles_reached(int port_num, const uint8_t* ids, int num, const double* target_angles, double threshold_deg, int timeout_ms)
-{
-    DWORD start_time = GetTickCount();
-
-    while (1)
+    else if (current_node_index + 1 == whole_node_count)//csvの追加手入力角度（大きな移動）用
     {
-        double current_angles[NUM] = { 0.0 };
-        double max_error = 0.0;
-
-        getangles(port_num, ids, current_angles);
-
-        for (int i = 0; i < num; i++)
-        {
-            double error = fabs(target_angles[i] - current_angles[i]);
-            if (error > max_error)
-            {
-                max_error = error;
-            }
-        }
-
-        if (max_error <= threshold_deg)
-        {
-            printf("target reached. max_error:%f[deg]\n", max_error);
-            return 1;
-        }
-
-        if ((int)(GetTickCount() - start_time) >= timeout_ms)
-        {
-            fprintf(stderr, "Timeout waiting for target. max_error:%f[deg]\n", max_error);
-            return 0;
-        }
-
-        Sleep(OPEN_MOVE_CHECK_INTERVAL_MS);
+        //サーボを動かす
+        setanglestime(port_num, ids, &path[current_node_index][0], 1.0);
     }
+    else
+    {
+        //サーボを動かす
+        setangles(port_num, ids, &path[current_node_index][0]);
+    }
+
+    return;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -332,53 +266,39 @@ int wait_until_angles_reached(int port_num, const uint8_t* ids, int num, const d
 */
 void move_to_open(int port_num, const uint8_t* ids, int num)
 {
-    //double angles[6] = { -73.0, 19.0, 0.0, -73.0, 19.0, 0.0 };
-    double angles[6] = { -66.2, 36.0, 1.1, -66.2, 36.0, 1.1 };
-    set_profile_params_all(port_num, ids, num, OPEN_PROFILE_VELOCITY, OPEN_PROFILE_ACCELERATION);
+    double angles[6] = { -73.0, 19.0, 0.0, -73.0, 19.0, 0.0 }; 
+
     //サーボを動かす
     setanglestime(port_num, ids, angles, 1.0);
-    wait_until_angles_reached(port_num, ids, num, angles, OPEN_REACHED_THRESHOLD_DEG, OPEN_MOVE_TIMEOUT_MS);
-
+    
     printf("move_to_open OK\n");
 
     return;
 }
 
-//void move_to_release_T(int port_num, const uint8_t* ids, int num)
-//{
-//    double angles[6] = { -62.314453, -139.306641, -75.146484, -73.0, -86.396484, -30.32226 }; //Tの最終姿勢を手打ち。非効率。
-//    //サーボを動かす
-//    setanglestime(port_num, ids, angles, 1.0);
-//    printf("move_to_release_T OK\n");
-//
-//    return;
-//}
-
 //ジャミングチェックを行う関数．ジャミングを検知したら数秒間静止したのち,1を返す
 //各関節を1つずつ順番にジャミングチェックする
 int jamming_check(int port_num, const uint8_t* ids, int num, int current_node_index)
 {
-    //int i = current_node_index % 6; //6関節
-    double angles[NUM] = { 0.0 };
+    int i = current_node_index % 6; //6関節
+    double expected_angle = path[current_node_index][i];
+    double angles[6] = { 0.0 };
     getangles(port_num, ids, angles);
+    double actual_angle = angles[i];
 
     //printf("|expected[%d]-actual[%d]|, %f\n", i, i, fabs(expected_angle - actual_angle));
-    //printf("|expected[%d]-actual[%d]|, %f\n", 1, 1, fabs(path[current_node_index][1] - angles[1]));
-    for (int i = 0; i < NUM; i++)
+    printf("|expected[%d]-actual[%d]|, %f\n", 1, 1, fabs(path[current_node_index][1] - angles[1])); 
+    for (i = 0; i < 6; i++)
     {
-        double expected_angle = path[current_node_index][i];
-        double actual_angle = angles[i];
-        double error = fabs(expected_angle - actual_angle);
-
-        printf("node:%d, servo ID:%d, expect%f actual%f\n", current_node_index, ids[i], expected_angle, angles[i]);
-
-        if (error > JAMMING_ANGLE_THRESHOLD)
-        {
-            printf("on joint %d: expected: %f but actual: %f\n", ids[i], expected_angle, actual_angle);
-            //Sleep(3000);
-            return 1;
-        }
+        printf("node:%d, servo ID:%d, expect%f actual%f\n", current_node_index, ids[i], path[current_node_index][i], angles[i]);        
     }
+    if (fabs(expected_angle - actual_angle) > JAMMING_ANGLE_THRESHOLD)
+    {
+        printf("on joint %d: expected: %f but actual: %f\n", ids[i], expected_angle, actual_angle);
+        Sleep(5000);
+        return 1;
+    }   
+
     return 0;
 }
 
@@ -439,14 +359,14 @@ int Manipulation(int port_num, const uint8_t* ids, int num, int current_node_ind
     {
         Sleep(5); //元々は200。
     }
-
+    
     return servo;
 }
 
 /*----------------------------------------------------------------------------*/
 /*
  *  サーボ駆動のためのメインプログラム
- *
+ * 
 */
 
 #define FORWARD 1
@@ -462,23 +382,10 @@ int main()
     int n = 0;
     uint8_t IDs[NUM] = { 1, 2, 3, 4, 5, 6 };   // IDのリスト
 
-    // 各モータのHoming Offset
-// 単位はDynamixel内部値
-// 例：10deg ≒ 114
-    int32_t homing_offset[NUM] = {
-        -2,    // ID1
-        -0,    // ID2
-        8,    // ID3
-        8,    // ID4
-        -10,    // ID5
-        4     // ID6
-    };
-
     // 経路をファイルから読み込む
-    char input[1000];
-    read_path_from_file(input);
-    printf("node count, %d\n", whole_node_count);
-
+    read_path_from_file();
+    printf("node count, %d\n", whole_node_count);    
+ 
     // ポートを開く
     int port_num = portHandler(port_numICENAME);
     packetHandler();
@@ -498,12 +405,10 @@ int main()
     for (int id = Min_ID; id <= Max_ID; id++)
     {
         // ping コマンドを送信
-        //int dxl_comm_result = pingGetModelNum(port_num, PROTOCOL_VERSION, id);
-        int model_num = pingGetModelNum(port_num, PROTOCOL_VERSION, id);
-        //if (pingGetModelNum(port_num, PROTOCOL_VERSION, id) != -1)
-        if (model_num != -1)
+        int dxl_comm_result = pingGetModelNum(port_num, PROTOCOL_VERSION, id);
+        if (pingGetModelNum(port_num, PROTOCOL_VERSION, id) != -1)
         {
-            printf("Dynamixel with ID %d found! Model=%d\n", id, model_num); //応答あり
+            printf("Dynamixel with ID %d found!\n", id); //応答あり
         }
         else
         {
@@ -519,7 +424,7 @@ int main()
         write1ByteTxRx(port_num, PROTOCOL_VERSION, id, ADDR_OPERATING_MODE, POSITION_CONTROL_MODE);
         // エラーチェック
         int dxl_comm_result = getLastTxRxResult(port_num, PROTOCOL_VERSION);
-        if (dxl_comm_result != COMM_SUCCESS)
+        if (dxl_comm_result != COMM_SUCCESS) 
         {
             fprintf(stderr, "Failed to set operating mode for Dynamixel ID %d\n", id);
             return -1;
@@ -530,59 +435,13 @@ int main()
         }
     }
 
-    // =========================
-// Homing Offset設定
-// =========================
-
-// 念のため全軸トルクOFF
-    for (int i = 0; i < NUM; i++)
-    {
-        write1ByteTxRx(
-            port_num,
-            PROTOCOL_VERSION,
-            IDs[i],
-            ADDR_TORQUE_ENABLE,
-            TORQUE_DISABLE
-        );
-    }
-
-    // 各モータへHoming Offset書き込み
-    for (int i = 0; i < NUM; i++)
-    {
-        write4ByteTxRx(
-            port_num,
-            PROTOCOL_VERSION,
-            IDs[i],
-            ADDR_HOMING_OFFSET,
-            homing_offset[i]
-        );
-
-        int dxl_comm_result =
-            getLastTxRxResult(port_num, PROTOCOL_VERSION);
-
-        if (dxl_comm_result != COMM_SUCCESS)
-        {
-            fprintf(stderr,
-                "Failed to set Homing Offset for ID: %d\n",
-                IDs[i]);
-        }
-        else
-        {
-            printf(
-                "Set Homing Offset %d for ID: %d\n",
-                homing_offset[i],
-                IDs[i]
-            );
-        }
-    }
-
     // モータにトルクを有効化
     for (int i = 0; i < NUM; i++)
     {
         write1ByteTxRx(port_num, PROTOCOL_VERSION, IDs[i], ADDR_TORQUE_ENABLE, TORQUE_ENABLE);
         // エラーチェック
         int dxl_comm_result = getLastTxRxResult(port_num, PROTOCOL_VERSION);
-        if (dxl_comm_result != COMM_SUCCESS)
+        if (dxl_comm_result != COMM_SUCCESS) 
         {
             fprintf(stderr, "Failed to disable torque for ID: %d\n", IDs[i]);
             return -1;
@@ -600,23 +459,23 @@ int main()
     move_to_open(port_num, IDs, NUM);
     Sleep(1000); // catch待機時間
 
-
-    //// リレーの通信ポートを開く
-    //HANDLE hComPort = RelayComOpen(PortName);
-    ////リレー0をonにする 
-    //RelayOn(hComPort, 0);
-    ////リレー0の状態を読む 
-    //RelayRead(hComPort, 0);
-    ////printf("\n");
-    ////待機 
-    //Sleep(3500);//ベルトコンベア流入時間
-    ////リレー0をoffにする 
-    //RelayOff(hComPort, 0);
-    //// リレー0の状態を読む 
-    //RelayRead(hComPort, 0);
+    /*
+    // リレーの通信ポートを開く
+    HANDLE hComPort = RelayComOpen(PortName);
+    //リレー0をonにする 
+    RelayOn(hComPort, 0);
+    //リレー0の状態を読む 
+    RelayRead(hComPort, 0);
     //printf("\n");
-
-
+    //待機 
+    Sleep(5000);
+    //リレー0をoffにする 
+    RelayOff(hComPort, 0);
+    // リレー0の状態を読む 
+    RelayRead(hComPort, 0);
+    printf("\n");
+    */
+    
 
     // マニピュレーション動作をN回繰り返す
     for (int j = 0; j < N; j++) {
@@ -630,24 +489,15 @@ int main()
         //Sleep(5000); // キャッチ移動とコンベア流入のための待機時間
 
 
-        // 最初のcsv行まではopen速度のまま計測せずに移動し，到達後1秒待機する
-        if (whole_node_count > 0)
-        {
-            send_command_to_servos(port_num, IDs, NUM, current_node_index);
-            Sleep(1000);
-            set_profile_params_all(port_num, IDs, NUM, CSV_PROFILE_VELOCITY, CSV_PROFILE_ACCELERATION);
-            current_node_index = 1;
-        }
-
         // 周波数を取得
         QueryPerformanceFrequency(&frequency);
-        // 計測開始(csvの2行目から最終行まで)
+        // 計測開始
         QueryPerformanceCounter(&start);
         while (current_node_index < whole_node_count)
         {
             /*double* expected_angles = path[current_node_index];
             double actual_angles[NUM];*/
-
+            
             // 計測開始
            // QueryPerformanceCounter(&start);
             send_command_to_servos(port_num, IDs, NUM, current_node_index);
@@ -658,19 +508,19 @@ int main()
            // printf("Waiting on node, , %d  send to servo_time : %lf[ms]\n", current_node_index, (double)(end.QuadPart - start.QuadPart) / frequency.QuadPart * 1000.0);
             if (current_node_index == 0)
             {
-                //Sleep(1500);
+                /*Sleep(1500)*/; // 定数で設定←fooで時間指定してるからいらなそう
             }
             else if (current_direction == FORWARD)
             {
-
+                
                 // 計測開始
                 //QueryPerformanceCounter(&start); // 各ノードに対するマニピュレーション待機前の時刻を取得
                 //移動待機時間(manipulation_time)を決める
-                servo_number[current_node_index] = Manipulation(port_num, IDs, NUM, current_node_index);
+                servo_number[current_node_index] = Manipulation(port_num,IDs,NUM, current_node_index);
                 if (current_node_index + 1 == whole_node_count)//csvの追加手入力角度（大きな移動）用
                 {
-                    printf("current node is 194\n");
-                    //Sleep(3000);
+                    printf("current node is %d\n", current_node_index);
+                  
                 }
                 printf("node:%d, servo_number[current_node_index]:%d, servo_number[current_node_index - 1]:%d\n", current_node_index, servo_number[current_node_index], servo_number[current_node_index - 1]);
                 if (servo_number[current_node_index] == servo_number[current_node_index - 1])
@@ -703,43 +553,7 @@ int main()
             //backwardを解除
             if (current_direction == BACKWARD && remaining_backward_count == 0)
             {
-                /*以下のコードを追加するとなぜかエラーC1075が発生
-                //逆転２秒
-                //リレー1をonにする
-                RelayOn(hComPort, 1);
-                // リレー1の状態を読む
-                RelayRead(hComPort, 1);
-                // リレー0をonにする
-                RelayOn(hComPort, 0);
-                // リレー0の状態を読む
-                RelayRead(hComPort, 0);
-                // 待機
-                Sleep(2000);
-                //リレー0をoffにする
-                RelayOff(hComPort, 0);
-                // リレー0の状態を読む
-                RelayRead(hComPort, 0);
-                printf("\n");
-                // リレー1をoffにする
-                RelayOff(hComPort, 1);
-                //リレー1の状態を読む
-                RelayRead(hComPort, 1);
-
-                //正転２秒
-                // リレー0をonにする
-                RelayOn(hComPort, 0);
-                // リレー0の状態を読む
-                RelayRead(hComPort, 0);
-                //printf("\n");
-                // 待機
-                Sleep(2000);
-                // リレー0をoffにする
-                RelayOff(hComPort, 0);
-                // リレー0の状態を読む
-                RelayRead(hComPort, 0);
-                */
-
-                current_direction = FORWARD; //正常系へ帰還
+                current_direction = FORWARD;
                 printf("backward ended on node %d\n", current_node_index);
             }
 
@@ -750,53 +564,20 @@ int main()
                 {
                     if (jamming_check(port_num, IDs, NUM, current_node_index)) // fabs(expected_angle - actual_angle)を計算して表示させる.ジャミングなら中に入る。
                     {
-                        //[変更]
-                        printf("Jamming detected! Backtracking motion...\n");
-
-                        int back = BACKTRACK_NODES;
-                        if (back > current_node_index) back = current_node_index; // 0未満防止
-                        remaining_backward_count = back;
                         current_direction = BACKWARD;
-
-                        if (current_node_index > 0)
-                        {
-                            send_command_to_servos(port_num, IDs, NUM, current_node_index - 1);
-                            printf("Jamming recovery command sent: %d -> %d\n",
-                                current_node_index, current_node_index - 1);
-                        }
-
-                        //// リレー1: 逆回転モードをON
-                        //RelayOn(hComPort, 1);
-                        //// リレー0: モータ駆動ON
-                        //RelayOn(hComPort, 0);
-
-                        //Sleep(200); // 0.2秒逆転
-
-                        //// 停止
-                        //RelayOff(hComPort, 0);
-                        //RelayOff(hComPort, 1);
-
-                        //Sleep(100);//0.1秒停止
-
-                        //// 再度正転
-                        //RelayOn(hComPort, 0);
-                        //Sleep(200);//0.2秒正転して元に戻す
-                        //RelayOff(hComPort, 0);
-
-                        // --- 復帰後の再チェック ---
-                        //Sleep(50); // 念のため少し待ってから再計測
-                        printf("Backtracking %d nodes: %d -> %d\n",
-                            back, current_node_index, current_node_index - back);
-                    }
+                        remaining_backward_count = 30;
+                        printf("Jamming occurred on node %d\n", current_node_index); 
+                        return 0;
+                    }                   
                 }
             }
             // 次のノードへ
             //current_nodeが最終ノード未満 or 最終ノード時の平均絶対誤差が0.01未満なら，current_node_indexを1だけ増加
             if (current_direction == FORWARD)
-            {
+            {                              
                 current_node_index++;
-
-            }
+                
+            }            
             //動作方向が逆方向なら，current_node_indexを1だけ減少かつ，remaining_back_wordを1だけ減少
             else
             {
@@ -813,79 +594,98 @@ int main()
         // 計測終了
         QueryPerformanceCounter(&end);
         printf("finish time : %lf[s]\n", (double)(end.QuadPart - start.QuadPart) / frequency.QuadPart);
-        Sleep(2000);
+        //Sleep(100);//場合によって変更
+
+        ///* トルクの解除 */
+        //    // トルクをOFFする
+        //    // トルクをOFFするとサーボが外力で回転するようになります
+        //for (int i = 0; i < NUM; i++)
+        //{
+        //    printf("SEND Torque OFF\n");
+        //    RSTorqueOnOff(hComm, 0, ID_LIST[i]);
+        //}
+        //Sleep(100);//待機
+
+        //// トルクをONする
+        //// トルク ON=1/OFF=0
+        //for (int i = 0; i < NUM; i++)
+        //{
+        //    printf("SEND Torque ON\n");
+        //    ret = RSTorqueOnOff(hComm, 1, ID_LIST[i]);
+        //    if (ret < 0)
+        //    {
+        //        printf("ERROR:Torque ON failed[%x]\n", ret);
+        //        goto End;
+        //    }
+        //}
+        //Sleep(50);//トルクon待機
 
         if (j == 0 && N > 1)
         {
-            //繰り返すならコメントオフを外す
             // ケージをフルオープン
             move_to_open(port_num, IDs, NUM);
             Sleep(1000); // 待機時間
+            /*
+            // リレー1をonにする 
+            RelayOn(hComPort, 1);
+            // リレー1の状態を読む 
+            RelayRead(hComPort, 1);
+            // リレー0をonにする 
+            RelayOn(hComPort, 0);
+            // リレー0の状態を読む 
+            RelayRead(hComPort, 0);
+            // 待機 
+            Sleep(5000);
+            // リレー0をoffにする 
+            RelayOff(hComPort, 0);
+            // リレー0の状態を読む 
+            RelayRead(hComPort, 0);
+            printf("\n");
+            // リレー1をoffにする 
+            RelayOff(hComPort, 1);
+            // リレー1の状態を読む 
+            RelayRead(hComPort, 1);
+            printf("\n");
 
-            ///* リレー1をonにする */
-            //RelayOn(hComPort, 1);
-            ///* リレー1の状態を読む */
-            //RelayRead(hComPort, 1);
-            ///* リレー0をonにする */
-            //RelayOn(hComPort, 0);
-            ///* リレー0の状態を読む */
-            //RelayRead(hComPort, 0);
-            ///* 待機 */
-            //Sleep(5000);
-            ///* リレー0をoffにする */
-            //RelayOff(hComPort, 0);
-            ///* リレー0の状態を読む */
-            //RelayRead(hComPort, 0);
+            Sleep(2000); // 初期位置を手動で変える
+
+            // リレー0をonにする 
+            RelayOn(hComPort, 0);
+            // リレー0の状態を読む 
+            RelayRead(hComPort, 0);
             //printf("\n");
-            ///* リレー1をoffにする */
-            //RelayOff(hComPort, 1);
-            ///* リレー1の状態を読む */
-            //RelayRead(hComPort, 1);
-            //printf("\n");
-
-            //Sleep(2000); // 初期位置を手動で変える
-
-            //// リレー0をonにする 
-            //RelayOn(hComPort, 0);
-            //// リレー0の状態を読む 
-            //RelayRead(hComPort, 0);
-            ////printf("\n");
-            //// 待機 
-            //Sleep(5000);
-            //// リレー0をoffにする 
-            //RelayOff(hComPort, 0);
-            //// リレー0の状態を読む 
-            //RelayRead(hComPort, 0);
-            //printf("\n");
-
+            // 待機 
+            Sleep(5000);
+            // リレー0をoffにする 
+            RelayOff(hComPort, 0);
+            // リレー0の状態を読む 
+            RelayRead(hComPort, 0);
+            printf("\n");
+            */
         }
 
         else
         {
-            //    // T字形のケージを開放
-                //if (strcmp(input, "t") == 0)
-                //{
-                //    move_to_release_T(port_num, IDs, NUM);
-                //}
-            //    // ケージをrelease位置に動かす
+            /*
+            // ケージをrelease位置に動かす
             move_to_open(port_num, IDs, NUM);
             Sleep(1000); // release待機時間
-
-            //    //// リレー0をonにする 
-            //    //RelayOn(hComPort, 0);
-            //    //// リレー0の状態を読む 
-            //    //RelayRead(hComPort, 0);
-            //    ////printf("\n");
-            //    ////待機 
-            //    //Sleep(3300);//ベルトコンベア流出時間
-            //    //// リレー0をoffにする 
-            //    //RelayOff(hComPort, 0);
-            //    //// リレー0の状態を読む 
-            //    //RelayRead(hComPort, 0);
-            //    //printf("\n");
-            //    //// リレーの通信ポートを閉じる
-            //    //RelayComClose(hComPort);
-
+            
+            // リレー0をonにする 
+            RelayOn(hComPort, 0);
+            // リレー0の状態を読む 
+            RelayRead(hComPort, 0);
+            //printf("\n");
+            //待機 
+            Sleep(4000);
+            // リレー0をoffにする 
+            RelayOff(hComPort, 0);
+            // リレー0の状態を読む 
+            RelayRead(hComPort, 0);
+            printf("\n");
+            // リレーの通信ポートを閉じる
+            RelayComClose(hComPort);
+            */
         }
 
         //// ケージをrelease位置に動かす
@@ -894,9 +694,9 @@ int main()
 
     }
 
-
+    /*
     // 各モータのトルクを無効化
-    for (int i = 0; i < NUM; i++)
+    for (int i = 0; i < NUM; i++) 
     {
         write1ByteTxRx(port_num, PROTOCOL_VERSION, IDs[i], ADDR_TORQUE_ENABLE, TORQUE_DISABLE);
         // エラーチェック
@@ -904,11 +704,11 @@ int main()
         if (dxl_comm_result != COMM_SUCCESS) {
             fprintf(stderr, "Failed to disable torque for ID: %d\n", IDs[i]);
             return -1;
-        }
+        }        
         else {
             printf("Torque disabled for ID: %d\n", IDs[i]);
         }
-    }
+    }*/
 
     // ポートを閉じる
     closePort(port_num);
