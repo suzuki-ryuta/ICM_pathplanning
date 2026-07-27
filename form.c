@@ -30,7 +30,10 @@
 #define ARRAY_NMAX 1000         // ノードの最大許容値。動作計画はノードがこの数値未満になるまで行う
 #define DEG_TO_DXL_VALUE(deg) ((int)((deg + 180.0) * 4096.0 / 360.0))  //度数からDynamixelの指令値に変換するマクロ
 #define DXL_VALUE_TO_DEG(data) ((double)((data) * 360.0 / 4096.0 - 180.0))  // Dynamixelからの取得値を度数に変換するマクロ
-#define JAMMING_ANGLE_THRESHOLD 10.0 //ジャミング判定の閾値
+#define JAMMING_READ_INTERVAL_MS 200       // ジャミング判定用のエンコーダ読み取り周期
+#define JAMMING_STUCK_DELTA_DEG 3       // この角度未満の変化なら停止気味とみなす
+#define JAMMING_COMMAND_STEP_THRESHOLD_DEG 2 // CSV上でこの角度以上動く関節だけ判定する
+#define JAMMING_STUCK_COUNT_LIMIT 4       // 停止気味がこの回数連続したらジャミング
 
 #define VERO 5
 #define N 1 // 動作繰り返し数
@@ -39,18 +42,46 @@
 #define ADDR_PROFILE_ACCELERATION 108
 #define ADDR_PROFILE_VELOCITY     112
 #define BACKTRACK_NODES 5   // ジャミング継続時に戻るノード数（必要に応じて調整）
-#define CSV_PROFILE_VELOCITY 150
-#define CSV_PROFILE_ACCELERATION 50
-#define OPEN_PROFILE_VELOCITY 30
-#define OPEN_PROFILE_ACCELERATION 10
-#define OPEN_REACHED_THRESHOLD_DEG 2.0
-#define OPEN_MOVE_TIMEOUT_MS 30000
-#define OPEN_MOVE_CHECK_INTERVAL_MS 50
+#define CSV_PROFILE_VELOCITY 150 //manipulation中のサーボ速度
+#define CSV_PROFILE_ACCELERATION 50 //manipulation中のサーボ加速度
+#define OPEN_PROFILE_VELOCITY 30 //move_to_openのサーボ速度
+#define OPEN_PROFILE_ACCELERATION 10 //move_to_openのサーボ加速度
+#define OPEN_REACHED_THRESHOLD_DEG 2.0 //move_to_openの到達判定のしきい値
+#define OPEN_MOVE_TIMEOUT_MS 30000 //move_to_openのタイムアウト
+#define OPEN_MOVE_CHECK_INTERVAL_MS 50 //move_to_openのチェック間隔
+#define CSV_REACHED_THRESHOLD_DEG 2.0 //CSV上の到達判定のしきい値
+#define CSV_FINAL_REACHED_THRESHOLD_DEG 0.5//最終姿勢周辺の到達判定のしきい値
+#define CSV_FINAL_FINE_NODE_COUNT 2 //最終姿勢から何個前のノードを正確にするか
+#define CSV_REACHED_CHECK_INTERVAL_MS 5 //CSV上の到達判定のチェック間隔
+#define CSV_FINAL_REACHED_STABLE_COUNT 5 //最終姿勢が何回連続で閾値内なら到達とみなすか
+#define CSV_FINAL_COMMAND_RESEND_INTERVAL_MS 500 //最終姿勢待機中の指令再送間隔
+#define CSV_FINAL_HOLD_MS 3000 //最終姿勢到達後に姿勢を保持する時間
+#define CSV_MOVE_TO_OPEN_AFTER_FINISH 0 //1なら終了後にopen位置へ戻す
+#define CSV_FINAL_APPROACH_TIME_SEC 1.0 //最終ノードだけsetangles.cと同じ補間指令で近づく時間
 
 
 double path[ARRAY_NMAX][NUM];
 int whole_node_count = 0;
 double MAE = 1.0; //最終姿勢時の平均絶対誤差を格納するためのグローバル変数
+
+static double previous_jamming_angles[NUM] = { 0.0 };
+static int jamming_stuck_count[NUM] = { 0 };
+static int jamming_has_previous_angles = 0;
+static int previous_jamming_node_index[NUM] = { 0 };
+static DWORD last_jamming_read_time = 0;
+
+void reset_jamming_check_state(void)
+{
+    for (int i = 0; i < NUM; i++)
+    {
+        previous_jamming_angles[i] = 0.0;
+        jamming_stuck_count[i] = 0;
+        previous_jamming_node_index[i] = 0;
+    }
+
+    jamming_has_previous_angles = 0;
+    last_jamming_read_time = 0;
+}
 
 //[追加]
 void set_profile_params(int port_num, uint8_t id, int vel, int acc)
@@ -116,22 +147,38 @@ void setangles(int port_num, const uint8_t* ids, const double* angles)
 // 角度取得関数
 void getangles(int port_num, const uint8_t* ids, double* angles)
 {
-    // Sync Readインスタンスの作成
-    int group_num = groupSyncRead(port_num, PROTOCOL_VERSION, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION);
-    if (group_num == -1)
-    {
-        fprintf(stderr, "Failed to create Sync Read instance\n");
-        return;
-    }
+    static int group_num = -1;
+    static int group_ready = 0;
+    static int initialized_port_num = -1;
 
-    // すべてのモータIDをSync Readのグループに追加
-    for (int i = 0; i < NUM; i++)
+    if (group_num == -1 || initialized_port_num != port_num)
     {
-        if (groupSyncReadAddParam(group_num, ids[i]) != 1)
+        group_num = groupSyncRead(port_num, PROTOCOL_VERSION, ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION);
+        if (group_num == -1)
         {
-            fprintf(stderr, "Failed to add parameter for ID: %d\n", ids[i]);
+            fprintf(stderr, "Failed to create Sync Read instance\n");
             return;
         }
+
+        initialized_port_num = port_num;
+        group_ready = 0;
+    }
+
+    if (!group_ready)
+    {
+        // すべてのモータIDをSync Readのグループに追加
+        for (int i = 0; i < NUM; i++)
+        {
+            if (groupSyncReadAddParam(group_num, ids[i]) != 1)
+            {
+                fprintf(stderr, "Failed to add parameter for ID: %d\n", ids[i]);
+                groupSyncReadClearParam(group_num);
+                group_ready = 0;
+                return;
+            }
+        }
+
+        group_ready = 1;
     }
 
     // すべての角度を一斉取得
@@ -153,23 +200,17 @@ void getangles(int port_num, const uint8_t* ids, double* angles)
         {
             uint32_t present_position = groupSyncReadGetData(group_num, ids[i], ADDR_PRESENT_POSITION, LEN_PRESENT_POSITION);
             angles[i] = DXL_VALUE_TO_DEG(present_position);  // データを角度に変換
-            printf("GET VALUE is %d\n", present_position);
         }
         else
         {
             fprintf(stderr, "Data not available for ID: %d\n", ids[i]);
         }
     }
-
-    // グループのパラメータをクリア
-    groupSyncReadClearParam(group_num);
 }
 
-// [変更]角度指令関数（同期移動・移動時間指定付き）
-void setanglestime(int port_num, const uint8_t* ids, const double* angles, double time_sec)
+// [変更]角度指令関数（同期移動）
+void setangles_profile(int port_num, const uint8_t* ids, const double* angles)
 {
-    (void)time_sec;
-
     int group_num = groupSyncWrite(port_num, PROTOCOL_VERSION, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
     if (group_num == -1) {
         fprintf(stderr, "Failed to create Sync Write instance\n");
@@ -193,6 +234,59 @@ void setanglestime(int port_num, const uint8_t* ids, const double* angles, doubl
         fprintf(stderr, "Failed to transmit Sync Write packet: %d\n", dxl_comm_result);
         groupSyncWriteClearParam(group_num);
         return;
+    }
+
+    groupSyncWriteClearParam(group_num);
+}
+
+void setangles_time(int port_num, const uint8_t* ids, const double* angles, double time_sec)
+{
+    int group_num = groupSyncWrite(port_num, PROTOCOL_VERSION, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
+    if (group_num == -1)
+    {
+        fprintf(stderr, "Failed to create Sync Write instance\n");
+        return;
+    }
+
+    double current_positions[NUM] = { 0.0 };
+    getangles(port_num, ids, current_positions);
+
+    int steps = 100;
+    DWORD step_time_ms = (DWORD)((time_sec / steps) * 1000.0);
+    if (step_time_ms < 1)
+    {
+        step_time_ms = 1;
+    }
+
+    for (int step = 0; step <= steps; step++)
+    {
+        groupSyncWriteClearParam(group_num);
+
+        for (int i = 0; i < NUM; i++)
+        {
+            double intermediate_angle = current_positions[i] +
+                (angles[i] - current_positions[i]) * (double)step / steps;
+            uint32_t param_goal_position = DEG_TO_DXL_VALUE(intermediate_angle);
+
+            if (groupSyncWriteAddParam(group_num, ids[i], param_goal_position, LEN_GOAL_POSITION) != 1)
+            {
+                fprintf(stderr, "Failed to add parameter for ID: %d\n", ids[i]);
+                groupSyncWriteClearParam(group_num);
+                return;
+            }
+        }
+
+        groupSyncWriteTxPacket(group_num);
+
+        int dxl_comm_result = getLastTxRxResult(port_num, PROTOCOL_VERSION);
+        if (dxl_comm_result != COMM_SUCCESS)
+        {
+            fprintf(stderr, "Failed to transmit Sync Write packet: %d\n", dxl_comm_result);
+            groupSyncWriteClearParam(group_num);
+            return;
+        }
+
+        Sleep(step_time_ms);
     }
 
     groupSyncWriteClearParam(group_num);
@@ -250,44 +344,9 @@ void read_path_from_file(char* inp)
 //[変更]
 void send_command_to_servos(int port_num, const uint8_t* ids, int num, int current_node_index)
 {
-    if (current_node_index == 0) {
-        setanglestime(port_num, ids, &path[current_node_index][0], 1.0);
-    }
-    else {
-        // ノード間の角度変化の最大値を計算
-        double max_delta = 0.0;
-        for (int i = 0; i < NUM; i++) {
-            double diff = fabs(path[current_node_index][i] - path[current_node_index - 1][i]);
-            if (diff > max_delta) max_delta = diff;
-        }
-
-        // 移動時間を決定（高ければ速くなる．例: 基準速度400 deg/s）
-        double time_sec = max_delta / 400.0;
-        //if (time_sec > 2.0)time_sec = 2.0;
-
-        setanglestime(port_num, ids, &path[current_node_index][0], time_sec);
-    }
+    (void)num;
+    setangles_profile(port_num, ids, &path[current_node_index][0]);
 }
-//void send_command_to_servos(int port_num, const uint8_t* ids, int num, int current_node_index)
-//{
-//    if (current_node_index == 0)
-//    {
-//        //サーボを動かす
-//        setanglestime(port_num, ids, &path[current_node_index][0], 1.0);
-//    }
-//    else if (current_node_index + 1 == whole_node_count)//csvの追加手入力角度（大きな移動）用
-//    {
-//        //サーボを動かす
-//        setanglestime(port_num, ids, &path[current_node_index][0], 1.0);
-//    }
-//    else
-//    {
-//        //サーボを動かす
-//        setangles(port_num, ids, &path[current_node_index][0]);
-//    }
-//
-//    return;
-//}
 
 int wait_until_angles_reached(int port_num, const uint8_t* ids, int num, const double* target_angles, double threshold_deg, int timeout_ms)
 {
@@ -336,7 +395,7 @@ void move_to_open(int port_num, const uint8_t* ids, int num)
     double angles[6] = { -66.2, 36.0, 1.1, -66.2, 36.0, 1.1 };
     set_profile_params_all(port_num, ids, num, OPEN_PROFILE_VELOCITY, OPEN_PROFILE_ACCELERATION);
     //サーボを動かす
-    setanglestime(port_num, ids, angles, 1.0);
+    setangles_profile(port_num, ids, angles);
     wait_until_angles_reached(port_num, ids, num, angles, OPEN_REACHED_THRESHOLD_DEG, OPEN_MOVE_TIMEOUT_MS);
 
     printf("move_to_open OK\n");
@@ -348,38 +407,253 @@ void move_to_open(int port_num, const uint8_t* ids, int num)
 //{
 //    double angles[6] = { -62.314453, -139.306641, -75.146484, -73.0, -86.396484, -30.32226 }; //Tの最終姿勢を手打ち。非効率。
 //    //サーボを動かす
-//    setanglestime(port_num, ids, angles, 1.0);
+//    setangles_profile(port_num, ids, angles);
 //    printf("move_to_release_T OK\n");
 //
 //    return;
 //}
 
-//ジャミングチェックを行う関数．ジャミングを検知したら数秒間静止したのち,1を返す
-//各関節を1つずつ順番にジャミングチェックする
-int jamming_check(int port_num, const uint8_t* ids, int num, int current_node_index)
+double get_csv_reached_threshold(int current_node_index)
 {
-    //int i = current_node_index % 6; //6関節
-    double angles[NUM] = { 0.0 };
-    getangles(port_num, ids, angles);
-
-    //printf("|expected[%d]-actual[%d]|, %f\n", i, i, fabs(expected_angle - actual_angle));
-    //printf("|expected[%d]-actual[%d]|, %f\n", 1, 1, fabs(path[current_node_index][1] - angles[1]));
-    for (int i = 0; i < NUM; i++)
+    int fine_start_index = whole_node_count - CSV_FINAL_FINE_NODE_COUNT;
+    if (fine_start_index < 0)
     {
-        double expected_angle = path[current_node_index][i];
-        double actual_angle = angles[i];
-        double error = fabs(expected_angle - actual_angle);
+        fine_start_index = 0;
+    }
 
-        printf("node:%d, servo ID:%d, expect%f actual%f\n", current_node_index, ids[i], expected_angle, angles[i]);
+    if (current_node_index >= fine_start_index)
+    {
+        return CSV_FINAL_REACHED_THRESHOLD_DEG;
+    }
 
-        if (error > JAMMING_ANGLE_THRESHOLD)
+    return CSV_REACHED_THRESHOLD_DEG;
+}
+
+int is_final_csv_node(int current_node_index)
+{
+    return current_node_index + 1 == whole_node_count;
+}
+
+int update_jamming_check_from_angles(const uint8_t* ids, int num, int current_node_index, const double* angles, DWORD now, double threshold_deg)
+{
+    if (!jamming_has_previous_angles)
+    {
+        for (int i = 0; i < num; i++)
         {
-            printf("on joint %d: expected: %f but actual: %f\n", ids[i], expected_angle, actual_angle);
-            //Sleep(3000);
+            previous_jamming_angles[i] = angles[i];
+            previous_jamming_node_index[i] = current_node_index;
+        }
+
+        last_jamming_read_time = now;
+        jamming_has_previous_angles = 1;
+        return 0;
+    }
+
+    for (int i = 0; i < num; i++)
+    {
+        double command_delta = fabs(path[current_node_index][i] - path[previous_jamming_node_index[i]][i]);
+        double target_error = fabs(path[current_node_index][i] - angles[i]);
+        double actual_delta = fabs(angles[i] - previous_jamming_angles[i]);
+        double required_delta = command_delta;
+
+        if (required_delta < JAMMING_COMMAND_STEP_THRESHOLD_DEG &&
+            target_error > threshold_deg)
+        {
+            required_delta = target_error;
+        }
+
+        if (target_error <= threshold_deg)
+        {
+            jamming_stuck_count[i] = 0;
+            previous_jamming_angles[i] = angles[i];
+            previous_jamming_node_index[i] = current_node_index;
+        }
+        else if (actual_delta <= JAMMING_STUCK_DELTA_DEG)
+        {
+            if (required_delta >= JAMMING_COMMAND_STEP_THRESHOLD_DEG)
+            {
+                jamming_stuck_count[i]++;
+            }
+            else
+            {
+                jamming_stuck_count[i] = 0;
+            }
+        }
+        else
+        {
+            jamming_stuck_count[i] = 0;
+            previous_jamming_angles[i] = angles[i];
+            previous_jamming_node_index[i] = current_node_index;
+        }
+
+        printf("node:%d, servo ID:%d, command_delta:%f target_error:%f actual_delta:%f stuck_count:%d\n",
+            current_node_index, ids[i], command_delta, target_error, actual_delta, jamming_stuck_count[i]);
+
+        if (jamming_stuck_count[i] >= JAMMING_STUCK_COUNT_LIMIT)
+        {
+            printf("Jamming on joint %d: target_error:%f but actual_delta:%f for %d checks\n",
+                ids[i], target_error, actual_delta, jamming_stuck_count[i]);
+
+            last_jamming_read_time = now;
             return 1;
         }
     }
+
+    last_jamming_read_time = now;
     return 0;
+}
+
+//ジャミングチェックを行う関数．動く指令が出ている関節の現在角度が変化しない状態を検知したら1を返す
+int jamming_check(int port_num, const uint8_t* ids, int num, int current_node_index)
+{
+    DWORD now = GetTickCount();
+    double angles[NUM] = { 0.0 };
+
+    if (jamming_has_previous_angles &&
+        (DWORD)(now - last_jamming_read_time) < JAMMING_READ_INTERVAL_MS)
+    {
+        return 0;
+    }
+
+    getangles(port_num, ids, angles);
+    return update_jamming_check_from_angles(ids, num, current_node_index, angles, now, get_csv_reached_threshold(current_node_index));
+}
+
+int wait_until_csv_node_reached_or_jammed(int port_num, const uint8_t* ids, int num, int current_node_index, double threshold_deg)
+{
+    while (1)
+    {
+        DWORD now = GetTickCount();
+        double current_angles[NUM] = { 0.0 };
+        double max_error = 0.0;
+
+        getangles(port_num, ids, current_angles);
+
+        for (int i = 0; i < num; i++)
+        {
+            double error = fabs(path[current_node_index][i] - current_angles[i]);
+            if (error > max_error)
+            {
+                max_error = error;
+            }
+        }
+
+        if (max_error <= threshold_deg)
+        {
+            reset_jamming_check_state();
+            return 1;
+        }
+
+        if (!jamming_has_previous_angles ||
+            (DWORD)(now - last_jamming_read_time) >= JAMMING_READ_INTERVAL_MS)
+        {
+            if (update_jamming_check_from_angles(ids, num, current_node_index, current_angles, now, threshold_deg))
+            {
+                return 0;
+            }
+        }
+
+        Sleep(CSV_REACHED_CHECK_INTERVAL_MS);
+    }
+}
+
+void wait_until_csv_final_node_reached(int port_num, const uint8_t* ids, int num, int current_node_index)
+{
+    DWORD last_log_time = 0;
+    DWORD last_command_time = 0;
+    int stable_count = 0;
+
+    printf("waiting final csv node:%d threshold:%f[deg]\n",
+        current_node_index,
+        CSV_FINAL_REACHED_THRESHOLD_DEG);
+
+    while (1)
+    {
+        DWORD now = GetTickCount();
+        double current_angles[NUM] = { 0.0 };
+        double max_error = 0.0;
+        int max_error_id = -1;
+        int outside_count = 0;
+
+        getangles(port_num, ids, current_angles);
+
+        for (int i = 0; i < num; i++)
+        {
+            double error = fabs(path[current_node_index][i] - current_angles[i]);
+            if (error != error || error > CSV_FINAL_REACHED_THRESHOLD_DEG)
+            {
+                outside_count++;
+            }
+
+            if (error == error && error > max_error)
+            {
+                max_error = error;
+                max_error_id = ids[i];
+            }
+        }
+
+        if (outside_count == 0)
+        {
+            stable_count++;
+
+            if (stable_count >= CSV_FINAL_REACHED_STABLE_COUNT)
+            {
+                printf("final target reached. max_error:%f[deg], stable_count:%d\n",
+                    max_error,
+                    stable_count);
+                for (int i = 0; i < num; i++)
+                {
+                    printf(
+                        "final ID:%d target:%f[deg], current:%f[deg], error:%f[deg]\n",
+                        ids[i],
+                        path[current_node_index][i],
+                        current_angles[i],
+                        fabs(path[current_node_index][i] - current_angles[i])
+                    );
+                }
+
+                reset_jamming_check_state();
+                return;
+            }
+        }
+        else
+        {
+            stable_count = 0;
+        }
+
+        if (last_command_time == 0 ||
+            (DWORD)(now - last_command_time) >= CSV_FINAL_COMMAND_RESEND_INTERVAL_MS)
+        {
+            setangles_profile(port_num, ids, &path[current_node_index][0]);
+            last_command_time = now;
+        }
+
+        if (last_log_time == 0 ||
+            (DWORD)(now - last_log_time) >= 1000)
+        {
+            fprintf(stderr,
+                "waiting final target. threshold:%f[deg], max_error:%f[deg], ID:%d, outside_count:%d, stable_count:%d/%d\n",
+                CSV_FINAL_REACHED_THRESHOLD_DEG,
+                max_error,
+                max_error_id,
+                outside_count,
+                stable_count,
+                CSV_FINAL_REACHED_STABLE_COUNT);
+            for (int i = 0; i < num; i++)
+            {
+                fprintf(stderr,
+                    "final ID:%d target:%f[deg], current:%f[deg], error:%f[deg]\n",
+                    ids[i],
+                    path[current_node_index][i],
+                    current_angles[i],
+                    fabs(path[current_node_index][i] - current_angles[i])
+                );
+            }
+            last_log_time = now;
+        }
+
+        Sleep(CSV_REACHED_CHECK_INTERVAL_MS);
+    }
 }
 
 //移動待機時間(manipulation_time)を各stepの最大値に応じて変える関数
@@ -407,39 +681,6 @@ int Manipulation(int port_num, const uint8_t* ids, int num, int current_node_ind
     {
         servo = 6;//存在しないサーボ
     }
-    /*else if (step_max > 0.0 && step_max <1.0)//細かく設定
-    {
-        Sleep(10);
-    }
-    else if (step_max >= 1.0 && step_max < 1.2)
-    {
-        Sleep(12);
-    }
-    else if (step_max >= 1.2 && step_max < 1.4)
-    {
-        Sleep(14);
-    }
-    else if (step_max >= 1.4 && step_max < 1.6)
-    {
-        Sleep(16);
-    }
-    else if (step_max >= 1.6 && step_max < 1.8)
-    {
-        Sleep(18);
-    }
-    else if (step_max >= 1.8 && step_max < 2.0)
-    {
-        Sleep(20);
-    }
-    else if (step_max >= 2.0 && step_max <= 3.0)//以降、0709-3.csv用
-    {
-        Sleep(50);
-    }
-    else*/
-    {
-        Sleep(5); //元々は200。
-    }
-
     return servo;
 }
 
@@ -462,7 +703,7 @@ int main()
     int n = 0;
     uint8_t IDs[NUM] = { 1, 2, 3, 4, 5, 6 };   // IDのリスト
 
-    // 各モータのHoming Offset
+    // 各モータのHoming Offsetオフセット量調整
 // 単位はDynamixel内部値
 // 例：10deg ≒ 114
     int32_t homing_offset[NUM] = {
@@ -478,6 +719,11 @@ int main()
     char input[1000];
     read_path_from_file(input);
     printf("node count, %d\n", whole_node_count);
+    printf("FORM final wait settings: threshold=%f[deg], stable_count=%d, final_approach=%f[s], move_to_open_after_finish=%d\n",
+        CSV_FINAL_REACHED_THRESHOLD_DEG,
+        CSV_FINAL_REACHED_STABLE_COUNT,
+        CSV_FINAL_APPROACH_TIME_SEC,
+        CSV_MOVE_TO_OPEN_AFTER_FINISH);
 
     // ポートを開く
     int port_num = portHandler(port_numICENAME);
@@ -619,11 +865,14 @@ int main()
 
 
     // マニピュレーション動作をN回繰り返す
+    int jamming_detection_count = 0;
+
     for (int j = 0; j < N; j++) {
 
         int current_node_index = 0;
         int current_direction = FORWARD;
         int remaining_backward_count = 0;
+        reset_jamming_check_state();
 
         //// ケージをcatch位置に動かす
         //move_to_catch(hComm);
@@ -645,6 +894,7 @@ int main()
         QueryPerformanceCounter(&start);
         while (current_node_index < whole_node_count)
         {
+            int jamming_detected_on_node = 0;
             /*double* expected_angles = path[current_node_index];
             double actual_angles[NUM];*/
 
@@ -682,8 +932,7 @@ int main()
                     printf("n=%d\n", n);
                     if (n > 1)//n=2で3回同じservo_nunmverが返されている
                     {
-                        Sleep(20);
-                        printf("n>=2 & Sleep(20)\n");
+                        printf("n>=2\n");
                     }
                 }
                 else if (servo_number[current_node_index] != servo_number[current_node_index - 1])
@@ -695,13 +944,25 @@ int main()
                 //QueryPerformanceCounter(&end); 
                // printf("node:%d, , manipulation_time : %lf[ms]\n", current_node_index, (double)(end.QuadPart - start.QuadPart) / frequency.QuadPart * 1000.0); // [ミリ秒]に直す
             }
+            if (current_direction == FORWARD && is_final_csv_node(current_node_index))
+            {
+                printf("final csv node:%d slow approach start. time:%f[s]\n",
+                    current_node_index,
+                    CSV_FINAL_APPROACH_TIME_SEC);
+                setangles_time(port_num, IDs, &path[current_node_index][0], CSV_FINAL_APPROACH_TIME_SEC);
+                wait_until_csv_final_node_reached(port_num, IDs, NUM, current_node_index);
+            }
             else
             {
-                Sleep(10);
+                double threshold_deg = get_csv_reached_threshold(current_node_index);
+                if (!wait_until_csv_node_reached_or_jammed(port_num, IDs, NUM, current_node_index, threshold_deg))
+                {
+                    jamming_detected_on_node = 1;
+                }
             }
 
             //backwardを解除
-            if (current_direction == BACKWARD && remaining_backward_count == 0)
+            if (!jamming_detected_on_node && current_direction == BACKWARD && remaining_backward_count == 0)
             {
                 /*以下のコードを追加するとなぜかエラーC1075が発生
                 //逆転２秒
@@ -743,52 +1004,47 @@ int main()
                 printf("backward ended on node %d\n", current_node_index);
             }
 
-            //ジャミングチェック　//現在角度の取得をしており，時間がかかる　//ここを改良して，整列速度を上げる
-            if (current_direction == FORWARD)
+            if (jamming_detected_on_node)
             {
-                if (servo_number[current_node_index] != 6)//存在しないサーボでない
+                //[変更]
+                printf("Jamming detected! Backtracking motion...\n");
+                jamming_detection_count++;
+
+                int back = BACKTRACK_NODES;
+                if (back > current_node_index) back = current_node_index; // 0未満防止
+                remaining_backward_count = back;
+                current_direction = BACKWARD;
+                reset_jamming_check_state();
+
+                if (current_node_index > 0)
                 {
-                    if (jamming_check(port_num, IDs, NUM, current_node_index)) // fabs(expected_angle - actual_angle)を計算して表示させる.ジャミングなら中に入る。
-                    {
-                        //[変更]
-                        printf("Jamming detected! Backtracking motion...\n");
-
-                        int back = BACKTRACK_NODES;
-                        if (back > current_node_index) back = current_node_index; // 0未満防止
-                        remaining_backward_count = back;
-                        current_direction = BACKWARD;
-
-                        if (current_node_index > 0)
-                        {
-                            send_command_to_servos(port_num, IDs, NUM, current_node_index - 1);
-                            printf("Jamming recovery command sent: %d -> %d\n",
-                                current_node_index, current_node_index - 1);
-                        }
-
-                        //// リレー1: 逆回転モードをON
-                        //RelayOn(hComPort, 1);
-                        //// リレー0: モータ駆動ON
-                        //RelayOn(hComPort, 0);
-
-                        //Sleep(200); // 0.2秒逆転
-
-                        //// 停止
-                        //RelayOff(hComPort, 0);
-                        //RelayOff(hComPort, 1);
-
-                        //Sleep(100);//0.1秒停止
-
-                        //// 再度正転
-                        //RelayOn(hComPort, 0);
-                        //Sleep(200);//0.2秒正転して元に戻す
-                        //RelayOff(hComPort, 0);
-
-                        // --- 復帰後の再チェック ---
-                        //Sleep(50); // 念のため少し待ってから再計測
-                        printf("Backtracking %d nodes: %d -> %d\n",
-                            back, current_node_index, current_node_index - back);
-                    }
+                    send_command_to_servos(port_num, IDs, NUM, current_node_index - 1);
+                    printf("Jamming recovery command sent: %d -> %d\n",
+                        current_node_index, current_node_index - 1);
                 }
+
+                //// リレー1: 逆回転モードをON
+                //RelayOn(hComPort, 1);
+                //// リレー0: モータ駆動ON
+                //RelayOn(hComPort, 0);
+
+                //Sleep(200); // 0.2秒逆転
+
+                //// 停止
+                //RelayOff(hComPort, 0);
+                //RelayOff(hComPort, 1);
+
+                //Sleep(100);//0.1秒停止
+
+                //// 再度正転
+                //RelayOn(hComPort, 0);
+                //Sleep(200);//0.2秒正転して元に戻す
+                //RelayOff(hComPort, 0);
+
+                // --- 復帰後の再チェック ---
+                //Sleep(50); // 念のため少し待ってから再計測
+                printf("Backtracking %d nodes: %d -> %d\n",
+                    back, current_node_index, current_node_index - back);
             }
             // 次のノードへ
             //current_nodeが最終ノード未満 or 最終ノード時の平均絶対誤差が0.01未満なら，current_node_indexを1だけ増加
@@ -813,7 +1069,7 @@ int main()
         // 計測終了
         QueryPerformanceCounter(&end);
         printf("finish time : %lf[s]\n", (double)(end.QuadPart - start.QuadPart) / frequency.QuadPart);
-        Sleep(2000);
+        Sleep(CSV_FINAL_HOLD_MS);
 
         if (j == 0 && N > 1)
         {
@@ -868,7 +1124,18 @@ int main()
                 //    move_to_release_T(port_num, IDs, NUM);
                 //}
             //    // ケージをrelease位置に動かす
-            move_to_open(port_num, IDs, NUM);
+            if (CSV_MOVE_TO_OPEN_AFTER_FINISH)
+            {
+                move_to_open(port_num, IDs, NUM);
+            }
+            else
+            {
+                printf("final pose held. move_to_open skipped after finish.\n");
+            }
+            if (j + 1 == N)
+            {
+                printf("Jamming detected count: %d\n", jamming_detection_count);
+            }
             Sleep(1000); // release待機時間
 
             //    //// リレー0をonにする 

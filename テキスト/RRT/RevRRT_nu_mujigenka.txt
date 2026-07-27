@@ -1,0 +1,59 @@
+GoalJudge RevRRT::goal_judge(std::vector<PointCloud> pcs)
+{
+//    int minx = INT_MAX, miny = INT_MAX, mint = INT_MAX;
+//    int maxx = INT_MIN, maxy = INT_MIN, maxt = INT_MIN;
+//    bool flag = false;
+//
+//    for (int i = 0; i < (int)pcs.size(); ++i) {
+//        for (int j = 0; j < (int)pcs[i].size(); ++j) {
+//            /*if (minx > pcs[i].get(j).x)  minx = pcs[i].get(j).x;
+//            if (maxx < pcs[i].get(j).x)  maxx = pcs[i].get(j).x;*/
+//            if (miny > pcs[i].get(j).y)  miny = pcs[i].get(j).y;
+//            if (maxy < pcs[i].get(j).y)  maxy = pcs[i].get(j).y;
+//            if (mint > pcs[i].get(j).th)  mint = pcs[i].get(j).th;
+//            if (maxt < pcs[i].get(j).th)  maxt = pcs[i].get(j).th;
+//            if (pcs[i].get(j).th == 0)   flag = true;
+//        }
+//        int widy = (maxy - miny) / 10;
+//        int widt = (maxt - mint) / 5;
+//        
+//        if (flag) {
+//            int pmint = INT_MAX, pmaxt = INT_MIN;
+//            for (int j = 0; j < (int)pcs[i].size(); ++j) {
+//                if (pcs[i].get(j).th < 180) {
+//                    if (pcs[i].get(j).th > pmaxt)    pmaxt = pcs[i].get(j).th;
+//                }
+//                if (pcs[i].get(j).th >= 180) {
+//                    if (pcs[i].get(j).th < pmint)    pmint = pcs[i].get(j).th;
+//                }
+//            }
+//            widt = (pmaxt + (360 - pmint)) / 5;
+//        }
+//
+//        std::cout << "y width: " << widy << std::endl;
+//        std::cout << "theta width: " << widt << std::endl;
+//        if (widy < 8)      return GoalJudge::NotGoal;
+//        if (widt < 25)      return GoalJudge::NotGoal;
+//    }
+//    return GoalJudge::Goal;
+
+	// Evaluate goal by approximate C-space volume: voxel_volume * number_of_points
+	CSpaceConfig* cs = CSpaceConfig::get_instance();
+	Vector3D<int> range = cs->getrange();
+	double voxel_volume = (double)range.x * (double)range.y * (double)range.z; // 単位は (x*y*th)
+
+	static double max_volume = 0.0;
+	double nu = 250000.0; // 閾値（もともとは点数ベースだった値を体積単位として扱う）
+	for (int i = 0; i < (int)pcs.size(); ++i) {
+		double vol = pcs[i].size() * voxel_volume;
+		if (vol > max_volume) max_volume = vol;
+		if (vol > nu) {
+			std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+			log << "Reverse volume threshold (nu) : " << nu << " voxel_vol: " << voxel_volume << " cluster_vol: " << vol << std::endl;
+			std::cout << "cluster points: " << pcs[i].size() << "  cluster_vol: " << vol << std::endl;
+			return GoalJudge::Goal;
+		}
+	}
+	std::cout << "Max volume so far: " << max_volume << std::endl;
+	return GoalJudge::NotGoal;
+}

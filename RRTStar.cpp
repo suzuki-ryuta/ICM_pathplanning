@@ -1,3 +1,5 @@
+#include<algorithm>
+#include<array>
 #include<iostream>
 #include<chrono>
 #include<climits>
@@ -18,6 +20,43 @@ extern std::string g_path_cost_report;
 using namespace std::chrono;
 
 namespace {
+
+struct RRTStarCostConfig
+{
+	double omega;
+	double time_loss;
+	std::array<double, Node::dof> weights;
+};
+
+const RRTStarCostConfig& rrtstar_cost_config()
+{
+	static const RRTStarCostConfig config = []{
+		bp::ptree pt_prob;
+		read_ini("config/ProblemDefine.ini", pt_prob);
+		return RRTStarCostConfig{
+			pt_prob.get<double>("RRTStar.omega"),
+			pt_prob.get<double>("RRTStar.Timeloss"),
+			// {2.0, 1.0, 1.0, 2.0, 1.0, 1.0}
+			{1.0, 1.0, 1.0, 1.0, 1.0, 1.0}
+		};
+	}();
+	return config;
+}
+
+bool rrtstar_verbose()
+{
+	static const bool verbose = []{
+		bp::ptree pt_prob;
+		try{
+			read_ini("config/ProblemDefine.ini", pt_prob);
+			return pt_prob.get<int>("RRTStar.verbose", 0) != 0;
+		}
+		catch(const boost::property_tree::ptree_error&){
+			return false;
+		}
+	}();
+	return verbose;
+}
 
 bool same_pointcloud(const PointCloud& lhs, const PointCloud& rhs)
 {
@@ -86,32 +125,16 @@ double weighted_distance(const Node& q1, const Node& q2)
     // double dth = calc_dth2(q1.node[2], q2.node[2]);
     // return std::sqrt(w_x * dx * dx + w_y * dy * dy + w_theta * dth * dth);
 	double max_diff = 0.0;
-	
-	bp::ptree pt_prob;
-	read_ini("config/ProblemDefine.ini", pt_prob);
-
-	double omega = pt_prob.get<double>("RRTStar.omega");
-	double Timeloss = pt_prob.get<double>("RRTStar.Timeloss");
+	const RRTStarCostConfig& config = rrtstar_cost_config();
 
 	//6次元
 	// 重みの設定 (0と3が根本の関節)
-    double w[6] = {2.0, 1.0, 1.0, 2.0, 1.0, 1.0};
-	for(int i=0; i<6; ++i){
-		double diff = w[i] * std::abs(q1.node[i] - q2.node[i]);
+	for(int i=0; i<Node::dof; ++i){
+		double diff = config.weights[i] * std::abs(q1.node[i] - q2.node[i]);
 		if(diff > max_diff) max_diff = diff;
 	}
-	max_diff = max_diff / omega + Timeloss;
+	max_diff = max_diff / config.omega + config.time_loss;
 	return max_diff;
-}
-
-double configuration_distance(const Node& q1, const Node& q2)
-{
-	double squared_distance = 0.0;
-	for(int i = 0; i < Node::dof; ++i){
-		double diff = q1.node[i] - q2.node[i];
-		squared_distance += diff * diff;
-	}
-	return std::sqrt(squared_distance);
 }
 
 void append_selected_path_log(const std::string& planner_name, int node_count, double total_cost)
@@ -147,14 +170,9 @@ double nodelist_cost(const NodeList& path)
 
 std::vector<int> RRTStar::get_neighbors_weighted(int index, double radius)
 {
-	std::vector<int> neighbors;
-	const Node& center = tree.get_RRTNode(index).node;
-
-	for(int i = 0; i < tree.size(); ++i){
-		RRTNode& candidate = tree.get_RRTNode(i);
-		if(candidate.is_valid && configuration_distance(candidate.node, center) <= radius){
-			neighbors.push_back(i);
-		}
+	std::vector<int> neighbors = tree.get_neighbors(index, radius);
+	if(0 <= index && index < tree.size() && tree.get_RRTNode(index).is_valid && radius >= 0.0){
+		neighbors.push_back(index);
 	}
 
 	return neighbors;
@@ -192,7 +210,7 @@ bool RRTStar::initialize(Node ini)
 	int index = 0;
 	std::cin >> index;
 	assert(0 <= index && index < (int)init_CFree.size());
-	
+
 	// tree.replace(RRTNode(ini, init_CFree[index]));
 	RRTNode init_node(ini, init_CFree[index]);
 	init_node.cost = 0.0;
@@ -229,8 +247,10 @@ Node RRTStar::sampling(Node Rand)
 		if (loop % 10 == 3 || loop % 10 == 7)	newnode = tree.format(Rand);
 		else                                    newnode = format_around(Rand);
 	}
-	std::cout << loop << ": ";
-	std::cout << newnode << std::endl;
+	if(rrtstar_verbose()){
+		std::cout << loop << ": ";
+		std::cout << newnode << std::endl;
+	}
 
 	return newnode;
 }
@@ -239,7 +259,7 @@ Node RRTStar::sampling(Node Rand)
 void RRTStar::add_garound()
 {
 	garound.push_back(tree.size() - 1);
-	std::cout << "around goal: " << garound.size() << std::endl;
+	if(rrtstar_verbose()) std::cout << "around goal: " << garound.size() << std::endl;
 }
 
 void RRTStar::add_goal_candidate()
@@ -291,12 +311,12 @@ GoalJudge RRTStar::goal_judge(State3D goal)
 
         if (max_dist < dist)   max_dist = dist;
     }
-    
+
     int delta_x = (xmax - xmin) / 2;
     max_dist = std::sqrt(max_dist * max_dist + delta_x * delta_x);
     if (max_dist > threshold * around_rate) return GoalJudge::NotGoal;
 
-    std::cout << "max distance:" << max_dist << std::endl;
+    if(rrtstar_verbose()) std::cout << "max distance:" << max_dist << std::endl;
 
 //    if (!contain_yth(pc, goal)) {
 //        std::cout << "epsilon is satisfied but doesn't contain goal state." << std::endl;
@@ -338,12 +358,12 @@ bool RRTStar::config_valid(Node newnode)
 	else {
 		return false;
 	}
-	
+
 }
 
 
 RRTStar::RRTStar()
-	:tree(), garound(), goal_indices(), strategy(new DfsCFO()), 
+	:tree(), garound(), goal_indices(), strategy(new DfsCFO()),
   	threshold(read_threshold())
 {
 	load_parameters(max_iterations, eta, gamma, d);
@@ -540,12 +560,12 @@ bool RevRRTStar::dfsconfig_valid(Node newnode)
 			//if(duplicate_check(e, cfree_obj))	continue;
 			bool flag = false;
 			for(int i=0; i<(int)cfree_obj.size(); ++i){
-				if(cfree_obj[i].overlap(e)){	
+				if(cfree_obj[i].overlap(e)){
 					flag = true;
 					break;
 				}
 			}
-			if(flag)	continue;	
+			if(flag)	continue;
 			cfree_obj.push_back(e);
 		}
 	}
@@ -569,7 +589,7 @@ bool RevRRTStar::dfsconfig_valid(Node newnode)
 		}
 	}
 	controller->robot_update(newnode);
-	
+
 	if((int)cfree_obj.size() == 0)	return false;
 	else{
 		RRTNode validnode(newnode, cfree_obj, del_list);
@@ -599,7 +619,7 @@ Node RevRRTStar::sampling(Node Rand)
 	static int loop = 0;
 	loop++;
 	Node newnode = tree.format(Rand);
-	std::cout << loop << ": " << newnode << std::endl;
+	if(rrtstar_verbose()) std::cout << loop << ": " << newnode << std::endl;
 
 	return newnode;
 }
@@ -635,7 +655,7 @@ GoalJudge RevRRTStar::goal_judge(std::vector<PointCloud> pcs)
 //        }
 //        int widy = (maxy - miny) / 10;
 //        int widt = (maxt - mint) / 5;
-//        
+//
 //        if (flag) {
 //            int pmint = INT_MAX, pmaxt = INT_MIN;
 //            for (int j = 0; j < (int)pcs[i].size(); ++j) {
@@ -666,20 +686,15 @@ GoalJudge RevRRTStar::goal_judge(std::vector<PointCloud> pcs)
 			return GoalJudge::Goal;
 		}
 	}
-	std::cout << "Maxi: " << maxi << std::endl;
+	if(rrtstar_verbose()) std::cout << "Maxi: " << maxi << std::endl;
 	return GoalJudge::NotGoal;
 }
 
 std::vector<int> RevRRTStar::get_neighbors_weighted(int index, double radius)
 {
-	std::vector<int> neighbors;
-	const Node& center = tree.get_RRTNode(index).node;
-
-	for(int i = 0; i < tree.size(); ++i){
-		RRTNode& candidate = tree.get_RRTNode(i);
-		if(candidate.is_valid && configuration_distance(candidate.node, center) <= radius){
-			neighbors.push_back(i);
-		}
+	std::vector<int> neighbors = tree.get_neighbors(index, radius);
+	if(0 <= index && index < tree.size() && tree.get_RRTNode(index).is_valid && radius >= 0.0){
+		neighbors.push_back(index);
 	}
 
 	return neighbors;
@@ -705,7 +720,7 @@ NodeList RevRRTStar::plan(Node ini, Node fin, State3D goal)
 		std::cout << "Invalid initial value was given." << std::endl;
 		return NodeList();
 	}
-	
+
 	auto start = std::chrono::system_clock::now();
 
 	int iteration = 0;
@@ -915,7 +930,7 @@ bool RRTStarConnect::initialize(Node ini, Node fin)
 	s_init.is_valid = true;
 	s_tree.replace(s_init);
 
-	// Setting goal configuration	
+	// Setting goal configuration
 	if(!robot_update(fin))	return false;
 	std::vector<PointCloud> fin_CFree = fin_ics.extract();
 	if(fin_CFree.size() == 0)	return false;
@@ -946,15 +961,15 @@ bool RRTStarConnect::sconf_update()
 		s_tree.pop_back();
 		return false;
 	}
-	
-	assert(s_tree.back_RRTNode().get_cfree_obj().size() == 1);	
+
+	assert(s_tree.back_RRTNode().get_cfree_obj().size() == 1);
 	return true;
 }
 
 
 bool RRTStarConnect::gconf_update()
 {
-	Node newnode = g_tree.back_RRTNode().node; 
+	Node newnode = g_tree.back_RRTNode().node;
 	if(!robot_update(newnode)){ //干渉判定
 		g_tree.pop_back();
 		return false;
@@ -963,7 +978,7 @@ bool RRTStarConnect::gconf_update()
 		g_tree.pop_back();
 		return false;
 	}
-	
+
 	return true;
 }
 
@@ -995,7 +1010,7 @@ GoalJudge RRTStarConnect::gconf_goaljudge(std::vector<PointCloud> cfo, RRTNode b
 		std::cout << "Connect goal." << std::endl;
 		return GoalJudge::Connect;
 	}
-	
+
 	return GoalJudge::NotGoal;
 }
 
@@ -1072,15 +1087,15 @@ GoalJudge RRTStarConnect::goal_sconf(State3D goal)
 
         if (max_dist < dist)   max_dist = dist;
     }
-    
+
     int delta_x = (xmax - xmin) / 2;
     max_dist = std::sqrt(max_dist * max_dist + delta_x * delta_x);
     if (max_dist > s_threshold) return GoalJudge::NotGoal;
 
-    std::cout << "max distance:" << max_dist << std::endl;
+    if(rrtstar_verbose()) std::cout << "max distance:" << max_dist << std::endl;
 
     if (!contain_yth(pc, goal)) {
-        std::cout << "epsilon is satisfied but doesn't contain goal state." << std::endl;
+        if(rrtstar_verbose()) std::cout << "epsilon is satisfied but doesn't contain goal state." << std::endl;
         return GoalJudge::NotGoal;
     }
 
@@ -1095,24 +1110,19 @@ GoalJudge RRTStarConnect::goal_connect(RRTNode bef, RRTNode aft)
 
 	std::vector<PointCloud> bef_cfree = bef.get_cfree_obj();
 	std::vector<PointCloud> aft_cfree = aft.get_cfree_obj();
-	std::vector<PointCloud> overlap_cfree;
 
-	for(const auto& bfree: bef_cfree){
-		for(const auto& afree: aft_cfree){
-			bool tof = bfree.overlap(afree);
-			if(!tof){
-				return GoalJudge::NotGoal;
-			}
+	if(bef_cfree.size() != 1) return GoalJudge::NotGoal;
+
+	std::vector<PointCloud> overlap_cfree = strategy->extract(bef_cfree[0], aft.getNode());
+	if(overlap_cfree.size() != 1) return GoalJudge::NotGoal;
+
+	for(const auto& afree: aft_cfree){
+		if(overlap_cfree[0].overlap(afree)){
+			return GoalJudge::Connect;
 		}
 	}
 
-	assert(bef_cfree.size() == 1);
-	overlap_cfree = strategy->extract(bef_cfree[0], aft.getNode());
-	
-	if(overlap_cfree.size() == 1){
-		return GoalJudge::Connect;
-	}
-	else return GoalJudge::NotGoal;
+	return GoalJudge::NotGoal;
 }
 
 
@@ -1134,7 +1144,7 @@ GoalJudge RRTStarConnect::goal_gconf(std::vector<PointCloud> cfo)
 //        }
 //        int widy = (maxy - miny) / 10;
 //        int widt = (maxt - mint) / 5;
-//        
+//
 //        if (flag) {
 //            int pmint = INT_MAX, pmaxt = INT_MIN;
 //            for (int j = 0; j < (int)cfo[i].size(); ++j) {
@@ -1256,17 +1266,22 @@ double RRTStarConnect::goal_candidate_cost(GoalJudge flag, int sindex, int ginde
 {
 	if(flag == GoalJudge::SGoal){
 		if(sindex < 0 || sindex >= s_tree.size()) return std::numeric_limits<double>::infinity();
-		return s_tree.get_RRTNode(sindex).cost;
+		RRTNode& snode = s_tree.get_RRTNode(sindex);
+		if(!snode.is_valid) return std::numeric_limits<double>::infinity();
+		return snode.cost;
 	}
 	if(flag == GoalJudge::GGoal){
 		if(gindex < 0 || gindex >= g_tree.size()) return std::numeric_limits<double>::infinity();
-		return g_tree.get_RRTNode(gindex).cost;
+		RRTNode& gnode = g_tree.get_RRTNode(gindex);
+		if(!gnode.is_valid) return std::numeric_limits<double>::infinity();
+		return gnode.cost;
 	}
 	if(flag == GoalJudge::Connect){
 		if(sindex < 0 || sindex >= s_tree.size()) return std::numeric_limits<double>::infinity();
 		if(gindex < 0 || gindex >= g_tree.size()) return std::numeric_limits<double>::infinity();
 		RRTNode& snode = s_tree.get_RRTNode(sindex);
 		RRTNode& gnode = g_tree.get_RRTNode(gindex);
+		if(!snode.is_valid || !gnode.is_valid) return std::numeric_limits<double>::infinity();
 		return snode.cost + weighted_distance(snode.node, gnode.node) + gnode.cost;
 	}
 	return std::numeric_limits<double>::infinity();
@@ -1374,25 +1389,26 @@ NodeList RRTStarConnect::plan(Node ini, Node fin, State3D goal)
 	while(iteration < max_iterations || goal_candidates.empty())
 	{
 		++iteration;
-		
+
 		static int i = 0;	++i;
 		if(i>500000)	exit(5963);
-		
+
 		// Random sampling and format
 		Node Rand = generate_newnode();
 		RRTNode opponent_node;
 		int opponent_index;
-	
-		if(i % 10 == 0){
-			std::cout << "start conf: " << s_tree.size() << 
+
+		if(rrtstar_verbose() && i % 10 == 0){
+			std::cout << "start conf: " << s_tree.size() <<
 			    	   "  goal conf: " << g_tree.size() << std::endl;
-		}std::cout << i << ": ";
-		
+		}
+		if(rrtstar_verbose()) std::cout << i << ": ";
+
 		if(s_tree.size() < g_tree.size()){
 			Node newnode = s_tree.format(Rand);
-			std::cout << newnode.node << std::endl;
-			opponent_node = g_tree.get_nearest_node(newnode);
+			if(rrtstar_verbose()) std::cout << newnode.node << std::endl;
 			opponent_index = g_tree.get_nearest_index(newnode);
+			opponent_node = g_tree.get_RRTNode(opponent_index);
 
 			if(!sconf_update())	continue;
 			RRTNode sconf_newnode = s_tree.back_RRTNode();
@@ -1405,12 +1421,12 @@ NodeList RRTStarConnect::plan(Node ini, Node fin, State3D goal)
 				s_tree.pop_back();
 				continue;
 			}
-			
+
 			// RRTStar*: Rewire for s_tree
 			rewire_s(q_new_index, q_near_s);
 
 			sconf_newnode = s_tree.back_RRTNode();
-			GoalJudge sgj = sconf_goaljudge(goal, sconf_newnode, opponent_node);	
+			GoalJudge sgj = sconf_goaljudge(goal, sconf_newnode, opponent_node);
 			if(sgj != GoalJudge::NotGoal){
 				if(sgj == GoalJudge::Connect){
 					add_goal_candidate(sgj, s_tree.get_now_index(), opponent_index);
@@ -1421,7 +1437,7 @@ NodeList RRTStarConnect::plan(Node ini, Node fin, State3D goal)
 			}
 
 			while(1){
-				g_tree.add(opponent_index, newnode); 
+				g_tree.add(opponent_index, newnode);
 				if(!gconf_update())	break;
 
 				// RRTStar*: Choose Parent for g_tree
@@ -1432,15 +1448,15 @@ NodeList RRTStarConnect::plan(Node ini, Node fin, State3D goal)
 					g_tree.pop_back();
 					break;
 				}
-				
+
 				// RRTStar*: Rewire for g_tree
 				rewire_g(q_new_index_g, q_near_g);
 
 				assert(s_tree.back_RRTNode().get_cfree_obj().size() == 1);
 				GoalJudge ggj = gconf_goaljudge(
-						g_tree.back_RRTNode().get_cfree_obj(), 
+						g_tree.back_RRTNode().get_cfree_obj(),
 						s_tree.back_RRTNode(), g_tree.back_RRTNode());
-				
+
 				if(ggj != GoalJudge::NotGoal){
 					if(ggj == GoalJudge::Connect){
 						add_goal_candidate(ggj, s_tree.get_now_index(), g_tree.get_now_index());
@@ -1453,7 +1469,7 @@ NodeList RRTStarConnect::plan(Node ini, Node fin, State3D goal)
 				if(extend_limit(newnode, g_tree.back_RRTNode().node)){
 					break;
 				}
-				
+
 				opponent_index = g_tree.get_now_index();
 				opponent_node  = g_tree.back_RRTNode();
 			}
@@ -1461,9 +1477,9 @@ NodeList RRTStarConnect::plan(Node ini, Node fin, State3D goal)
 
 		else{
 			Node newnode = g_tree.format(Rand);
-			std::cout << newnode.node << std::endl;
+			if(rrtstar_verbose()) std::cout << newnode.node << std::endl;
 			opponent_index = s_tree.get_nearest_index(newnode);
-			opponent_node  = s_tree.get_nearest_node(newnode);
+			opponent_node  = s_tree.get_RRTNode(opponent_index);
 
 			if(!gconf_update())	continue;
 			RRTNode gconf_newnode = g_tree.back_RRTNode();
@@ -1476,15 +1492,15 @@ NodeList RRTStarConnect::plan(Node ini, Node fin, State3D goal)
 				g_tree.pop_back();
 				continue;
 			}
-			
+
 			// RRTStar*: Rewire for g_tree
 			rewire_g(q_new_index_g, q_near_g);
 
 			gconf_newnode = g_tree.back_RRTNode();
 			GoalJudge ggj = gconf_goaljudge(
-					g_tree.back_RRTNode().get_cfree_obj(), 
+					g_tree.back_RRTNode().get_cfree_obj(),
 					opponent_node, gconf_newnode);
-			
+
 			if(ggj != GoalJudge::NotGoal){
 				if(ggj == GoalJudge::Connect){
 					add_goal_candidate(ggj, opponent_index, g_tree.get_now_index());
@@ -1493,7 +1509,7 @@ NodeList RRTStarConnect::plan(Node ini, Node fin, State3D goal)
 					add_goal_candidate(ggj, -1, g_tree.get_now_index());
 				}
 			}
-			
+
 			while(1){
 				s_tree.add(opponent_index, newnode);
 				if(!sconf_update())	break;
@@ -1506,7 +1522,7 @@ NodeList RRTStarConnect::plan(Node ini, Node fin, State3D goal)
 					s_tree.pop_back();
 					break;
 				}
-				
+
 				// RRTStar*: Rewire for s_tree
 				rewire_s(q_new_index, q_near_s);
 
@@ -1546,7 +1562,7 @@ NodeList RRTStarConnect::plan(Node ini, Node fin, State3D goal)
 		append_selected_path_log("RRTStarConnect", selected_path.size(), selected_cost);
 		return selected_path;
 	}
-	
+
 	return NodeList();
 }
 
@@ -1589,15 +1605,19 @@ bool RRTStar::choose_parent(int q_new_index, const std::vector<int>& q_near)
 	if(best_parent == -1){
 		q_new.cost = current_cost;
 		q_new.is_valid = true;
-		std::cout << "[choose_parent] 親未更新: コスト関数 = " << weighted_distance(current_parent_node.node, child_node) 
-			  << ", 累積コスト = " << q_new.cost << std::endl;
+		if(rrtstar_verbose()){
+			std::cout << "[choose_parent] 親未更新: コスト関数 = " << weighted_distance(current_parent_node.node, child_node)
+				  << ", 累積コスト = " << q_new.cost << std::endl;
+		}
 		return true;
 	}
 
 	tree.set_parent_index(q_new_index, best_parent);
 	tree.get_RRTNode(q_new_index) = best_node;
-	std::cout << "[choose_parent] 親更新: コスト関数 = " << weighted_distance(tree.get_RRTNode(best_parent).node, child_node) 
-		  << ", 累積コスト = " << best_node.cost << std::endl;
+	if(rrtstar_verbose()){
+		std::cout << "[choose_parent] 親更新: コスト関数 = " << weighted_distance(tree.get_RRTNode(best_parent).node, child_node)
+			  << ", 累積コスト = " << best_node.cost << std::endl;
+	}
 	return true;
 }
 
@@ -1606,13 +1626,13 @@ bool RRTStar::validate_edge(int parent_index, const Node& child_node, RRTNode& o
 	RRTNode& parent = tree.get_RRTNode(parent_index);
 
     if(!robot_update(child_node)){
-        std::cout << "衝突判定fail (RRT*)" << std::endl;
+        if(rrtstar_verbose()) std::cout << "衝突判定fail (RRT*)" << std::endl;
 		return false;
 	}
 
     std::vector<PointCloud> cfree = strategy->extract(parent.pc(), child_node);
     if(cfree.size() != 1){
-	    std::cout << "分裂判定fail (RRT*)" << std::endl;
+	    if(rrtstar_verbose()) std::cout << "分裂判定fail (RRT*)" << std::endl;
         return false;
 	}
 
@@ -1621,14 +1641,16 @@ bool RRTStar::validate_edge(int parent_index, const Node& child_node, RRTNode& o
     //     return false;
     // }
 
-    std::cout << "制約pass (RRT*)" << std::endl;
+    if(rrtstar_verbose()) std::cout << "制約pass (RRT*)" << std::endl;
 
     RRTNode validnode(child_node, cfree[0]);
 	double edge_cost = weighted_distance(parent.node, child_node);
 	validnode.cost = parent.cost + edge_cost;
 	validnode.is_valid = true;
-	std::cout << "[validate_edge] ノード採用: コスト関数 = " << edge_cost 
-		  << ", 累積コスト = " << validnode.cost << std::endl;
+	if(rrtstar_verbose()){
+		std::cout << "[validate_edge] ノード採用: コスト関数 = " << edge_cost
+			  << ", 累積コスト = " << validnode.cost << std::endl;
+	}
 	// リワイヤされたノードのクラスタ情報をキャッシュに保存（child_indexが有効な場合）
 	if(child_index >= 0){
 		RRTNode& child_rrt = tree.get_RRTNode(child_index);
@@ -1663,8 +1685,10 @@ bool RRTStar::rewire(int q_new_index, const std::vector<int>& q_near)
 			tree.set_parent_index(near_index, q_new_index);
 			validnode.cost = new_cost;
 			tree.get_RRTNode(near_index) = validnode;
-			std::cout << "[rewire] ノード" << near_index << "をリワイヤ: コスト関数 = " << edge_cost 
-				  << ", 新しい累積コスト = " << new_cost << " (前: " << old_cost << ")" << std::endl;
+			if(rrtstar_verbose()){
+				std::cout << "[rewire] ノード" << near_index << "をリワイヤ: コスト関数 = " << edge_cost
+					  << ", 新しい累積コスト = " << new_cost << " (前: " << old_cost << ")" << std::endl;
+			}
 
 			update_subtree_after_rewire(near_index);
 			rewired = true;
@@ -1673,7 +1697,7 @@ bool RRTStar::rewire(int q_new_index, const std::vector<int>& q_near)
 	}
 
 	if(rewired_count > 0){
-		std::cout << "rewired(" << rewired_count << "個）成功" << std::endl;
+		if(rrtstar_verbose()) std::cout << "rewired(" << rewired_count << "個）成功" << std::endl;
 	}
 	return rewired;
 }
@@ -1701,7 +1725,7 @@ void RRTStar::update_subtree_after_rewire(int index)
 
 		// 親の位置で再度クラスタを抽出
 		std::vector<PointCloud> parent_cluster_reextracted = strategy->extract(parent.pc(), child.node);
-		
+
 		// 抽出結果が親のキャッシュされたクラスタと同じかチェック
 		bool cluster_same = false;
 		if(parent.cluster_cache.size() == 1 && parent_cluster_reextracted.size() == 1){
@@ -1712,7 +1736,7 @@ void RRTStar::update_subtree_after_rewire(int index)
 			// クラスタが同じ -> 親以降の全子孫ノードがpassしたと見なす
 			// 単にコストとparent_indexを更新
 			child.cost = parent.cost + weighted_distance(parent.node, child.node);
-			std::cout << "クラスタ情報が同じため、子孫ノード再チェックをスキップ (RRT*)" << std::endl;
+			if(rrtstar_verbose()) std::cout << "クラスタ情報が同じため、子孫ノード再チェックをスキップ (RRT*)" << std::endl;
 		}
 		else{
 			// クラスタが異なる -> 制約チェックを再度実行
@@ -1738,15 +1762,7 @@ void RRTStar::update_subtree_after_rewire(int index)
 
 std::vector<int> RRTStar::get_children_indices(int parent)
 {
-	std::vector<int> children;
-	for(int i = 0; i < tree.size(); ++i){
-		if(i == parent) continue;
-		if(tree.get_parent_index(i) == parent){
-			children.push_back(i);
-		}
-	}
-
-	return children;
+	return tree.get_children_indices(parent);
 }
 
 void RRTStar::repair_failed_branch(int root_index)
@@ -1798,7 +1814,7 @@ void RRTStar::repair_failed_branch(int root_index)
 		if(visited[index]) continue;
 		visited[index] = true;
 
-		tree.get_RRTNode(index).is_valid = false;
+		tree.invalidate(index);
 
 		std::vector<int> children = get_children_indices(index);
 		for(int child_index : children){
@@ -1849,15 +1865,19 @@ bool RevRRTStar::choose_parent(int q_new_index, const std::vector<int>& q_near)
 	if(best_parent == -1){
 		q_new.cost = current_cost;
 		q_new.is_valid = true;
-		std::cout << "[choose_parent] 親未更新: コスト関数 = " << weighted_distance(current_parent_node.node, child_node) 
-			  << ", 累積コスト = " << q_new.cost << std::endl;
+		if(rrtstar_verbose()){
+			std::cout << "[choose_parent] 親未更新: コスト関数 = " << weighted_distance(current_parent_node.node, child_node)
+				  << ", 累積コスト = " << q_new.cost << std::endl;
+		}
 		return true;
 	}
 
 	tree.set_parent_index(q_new_index, best_parent);
 	tree.get_RRTNode(q_new_index) = best_node;
-	std::cout << "[choose_parent] 親更新: コスト関数 = " << weighted_distance(tree.get_RRTNode(best_parent).node, child_node) 
-		  << ", 累積コスト = " << best_node.cost << std::endl;
+	if(rrtstar_verbose()){
+		std::cout << "[choose_parent] 親更新: コスト関数 = " << weighted_distance(tree.get_RRTNode(best_parent).node, child_node)
+			  << ", 累積コスト = " << best_node.cost << std::endl;
+	}
 	return true;
 }
 
@@ -1867,7 +1887,7 @@ bool RevRRTStar::validate_edge(int parent_index, const Node& child_node, RRTNode
 	Controller* controller = Controller::get_instance();
 
     if(!robot_update(child_node)){
-        std::cout << "衝突判定fail (RevRRT*)" << std::endl;
+        if(rrtstar_verbose()) std::cout << "衝突判定fail (RevRRT*)" << std::endl;
 		return false;
 	}
 
@@ -1882,12 +1902,12 @@ bool RevRRTStar::validate_edge(int parent_index, const Node& child_node, RRTNode
 		for(const auto& e : cfree_obj_tmp){
 			bool flag = false;
 			for(int i=0; i<(int)cfree_obj.size(); ++i){
-				if(cfree_obj[i].overlap(e)){	
+				if(cfree_obj[i].overlap(e)){
 					flag = true;
 					break;
 				}
 			}
-			if(flag)	continue;	
+			if(flag)	continue;
 			cfree_obj.push_back(e);
 		}
 	}
@@ -1913,22 +1933,24 @@ bool RevRRTStar::validate_edge(int parent_index, const Node& child_node, RRTNode
 	controller->robot_update(child_node);
 
 	if((int)cfree_obj.size() == 0){
-	    std::cout << "分裂判定fail (RevRRT*)" << std::endl;
+	    if(rrtstar_verbose()) std::cout << "分裂判定fail (RevRRT*)" << std::endl;
         return false;
 	}
 
-    std::cout << "制約pass (RevRRT*)" << std::endl;
+    if(rrtstar_verbose()) std::cout << "制約pass (RevRRT*)" << std::endl;
 
     RRTNode validnode(child_node, cfree_obj, del_list);
 	double edge_cost = weighted_distance(parent.node, child_node);
 	validnode.cost = parent.cost + edge_cost;
 	validnode.is_valid = true;
-	std::cout << "[validate_edge] ノード採用: コスト関数 = " << edge_cost 
-		  << ", 累積コスト = " << validnode.cost << std::endl;
+	if(rrtstar_verbose()){
+		std::cout << "[validate_edge] ノード採用: コスト関数 = " << edge_cost
+			  << ", 累積コスト = " << validnode.cost << std::endl;
+	}
 	// キャッシュに保存（child_indexが有効な場合）
 	if(child_index >= 0){
 		RRTNode& child_rrt = tree.get_RRTNode(child_index);
-		validnode.cluster_cache = {child_rrt.pc()};
+		validnode.cluster_cache = child_rrt.get_cfree_obj();
 	}
 	out_node = validnode;
     return true;
@@ -1959,16 +1981,17 @@ bool RevRRTStar::rewire(int q_new_index, const std::vector<int>& q_near)
 		if(near_index == q_new_index) continue;
 
 		RRTNode& near_node = tree.get_RRTNode(near_index);
-		const Node parent_node = q_new.node;
-		double tentative_cost = q_new.cost + weighted_distance(q_new.node, near_node.node);
+			double tentative_cost = q_new.cost + weighted_distance(q_new.node, near_node.node);
 
 		if(tentative_cost < near_node.cost){
 			RRTNode validated_node;
 			if(validate_edge(q_new_index, near_node.node, validated_node, near_index)){
 				tree.set_parent_index(near_index, q_new_index);
 				tree.get_RRTNode(near_index) = validated_node;
-				std::cout << "[rewire] リワイア実行: インデックス = " << near_index 
-					  << ", 新コスト = " << validated_node.cost << std::endl;
+				if(rrtstar_verbose()){
+					std::cout << "[rewire] リワイア実行: インデックス = " << near_index
+						  << ", 新コスト = " << validated_node.cost << std::endl;
+				}
 				update_subtree_after_rewire(near_index);
 				rewired = true;
 				rewired_count++;
@@ -1977,7 +2000,7 @@ bool RevRRTStar::rewire(int q_new_index, const std::vector<int>& q_near)
 	}
 
 	if(rewired_count > 0){
-		std::cout << "[rewire] リワイア完了: " << rewired_count << "個のノードを更新" << std::endl;
+		if(rrtstar_verbose()) std::cout << "[rewire] リワイア完了: " << rewired_count << "個のノードを更新" << std::endl;
 	}
 	return rewired;
 }
@@ -2008,8 +2031,10 @@ void RevRRTStar::update_subtree_after_rewire(int index)
 		}
 
 		tree.get_RRTNode(child_index) = validated_node;
-		std::cout << "[update_subtree] 経路状態とコストを再計算: インデックス = "
-			  << child_index << ", 新コスト = " << validated_node.cost << std::endl;
+		if(rrtstar_verbose()){
+			std::cout << "[update_subtree] 経路状態とコストを再計算: インデックス = "
+				  << child_index << ", 新コスト = " << validated_node.cost << std::endl;
+		}
 
 		std::vector<int> children = get_children_indices(child_index);
 		for(int next_child : children){
@@ -2022,15 +2047,7 @@ void RevRRTStar::update_subtree_after_rewire(int index)
 
 std::vector<int> RevRRTStar::get_children_indices(int parent)
 {
-	std::vector<int> children;
-	for(int i = 0; i < tree.size(); ++i){
-		if(i == parent) continue;
-		if(tree.get_parent_index(i) == parent){
-			children.push_back(i);
-		}
-	}
-
-	return children;
+	return tree.get_children_indices(parent);
 }
 
 void RevRRTStar::repair_failed_branch(int root_index)
@@ -2082,7 +2099,7 @@ void RevRRTStar::repair_failed_branch(int root_index)
 		if(visited[index]) continue;
 		visited[index] = true;
 
-		tree.get_RRTNode(index).is_valid = false;
+		tree.invalidate(index);
 
 		std::vector<int> children = get_children_indices(index);
 		for(int child_index : children){
@@ -2096,7 +2113,7 @@ void RevRRTStar::repair_failed_branch(int root_index)
 void RevRRTStar::add_garound()
 {
 	garound.push_back(tree.size() - 1);
-	std::cout << "around goal: " << garound.size() << std::endl;
+	if(rrtstar_verbose()) std::cout << "around goal: " << garound.size() << std::endl;
 }
 
 Node RevRRTStar::format_around(Node rand)
@@ -2121,14 +2138,9 @@ Node RevRRTStar::format_around(Node rand)
 
 std::vector<int> RRTStarConnect::get_neighbors_weighted_s(int index, double radius)
 {
-	std::vector<int> neighbors;
-	const Node& center = s_tree.get_RRTNode(index).node;
-
-	for(int i = 0; i < s_tree.size(); ++i){
-		RRTNode& candidate = s_tree.get_RRTNode(i);
-		if(candidate.is_valid && configuration_distance(candidate.node, center) <= radius){
-			neighbors.push_back(i);
-		}
+	std::vector<int> neighbors = s_tree.get_neighbors(index, radius);
+	if(0 <= index && index < s_tree.size() && s_tree.get_RRTNode(index).is_valid && radius >= 0.0){
+		neighbors.push_back(index);
 	}
 
 	return neighbors;
@@ -2136,14 +2148,9 @@ std::vector<int> RRTStarConnect::get_neighbors_weighted_s(int index, double radi
 
 std::vector<int> RRTStarConnect::get_neighbors_weighted_g(int index, double radius)
 {
-	std::vector<int> neighbors;
-	const Node& center = g_tree.get_RRTNode(index).node;
-
-	for(int i = 0; i < g_tree.size(); ++i){
-		RRTNode& candidate = g_tree.get_RRTNode(i);
-		if(candidate.is_valid && configuration_distance(candidate.node, center) <= radius){
-			neighbors.push_back(i);
-		}
+	std::vector<int> neighbors = g_tree.get_neighbors(index, radius);
+	if(0 <= index && index < g_tree.size() && g_tree.get_RRTNode(index).is_valid && radius >= 0.0){
+		neighbors.push_back(index);
 	}
 
 	return neighbors;
@@ -2185,15 +2192,19 @@ bool RRTStarConnect::choose_parent_s(int q_new_index, const std::vector<int>& q_
 	if(best_parent == -1){
 		q_new.cost = current_cost;
 		q_new.is_valid = true;
-		std::cout << "[choose_parent_s] 親未更新: コスト関数 = " << weighted_distance(current_parent_node.node, child_node) 
-			  << ", 累積コスト = " << q_new.cost << std::endl;
+		if(rrtstar_verbose()){
+			std::cout << "[choose_parent_s] 親未更新: コスト関数 = " << weighted_distance(current_parent_node.node, child_node)
+				  << ", 累積コスト = " << q_new.cost << std::endl;
+		}
 		return true;
 	}
 
 	s_tree.set_parent_index(q_new_index, best_parent);
 	s_tree.get_RRTNode(q_new_index) = best_node;
-	std::cout << "[choose_parent_s] 親更新: コスト関数 = " << weighted_distance(s_tree.get_RRTNode(best_parent).node, child_node) 
-		  << ", 累積コスト = " << best_node.cost << std::endl;
+	if(rrtstar_verbose()){
+		std::cout << "[choose_parent_s] 親更新: コスト関数 = " << weighted_distance(s_tree.get_RRTNode(best_parent).node, child_node)
+			  << ", 累積コスト = " << best_node.cost << std::endl;
+	}
 	return true;
 }
 
@@ -2233,15 +2244,19 @@ bool RRTStarConnect::choose_parent_g(int q_new_index, const std::vector<int>& q_
 	if(best_parent == -1){
 		q_new.cost = current_cost;
 		q_new.is_valid = true;
-		std::cout << "[choose_parent_g] 親未更新: コスト関数 = " << weighted_distance(current_parent_node.node, child_node) 
-			  << ", 累積コスト = " << q_new.cost << std::endl;
+		if(rrtstar_verbose()){
+			std::cout << "[choose_parent_g] 親未更新: コスト関数 = " << weighted_distance(current_parent_node.node, child_node)
+				  << ", 累積コスト = " << q_new.cost << std::endl;
+		}
 		return true;
 	}
 
 	g_tree.set_parent_index(q_new_index, best_parent);
 	g_tree.get_RRTNode(q_new_index) = best_node;
-	std::cout << "[choose_parent_g] 親更新: コスト関数 = " << weighted_distance(g_tree.get_RRTNode(best_parent).node, child_node) 
-		  << ", 累積コスト = " << best_node.cost << std::endl;
+	if(rrtstar_verbose()){
+		std::cout << "[choose_parent_g] 親更新: コスト関数 = " << weighted_distance(g_tree.get_RRTNode(best_parent).node, child_node)
+			  << ", 累積コスト = " << best_node.cost << std::endl;
+	}
 	return true;
 }
 
@@ -2264,8 +2279,10 @@ bool RRTStarConnect::rewire_s(int q_new_index, const std::vector<int>& q_near)
 			s_tree.set_parent_index(near_index, q_new_index);
 			validnode.cost = new_cost;
 			s_tree.get_RRTNode(near_index) = validnode;
-			std::cout << "[rewire_s] ノード" << near_index << "をリワイヤ: コスト関数 = " << edge_cost 
-				  << ", 新しい累積コスト = " << new_cost << " (前: " << old_cost << ")" << std::endl;
+			if(rrtstar_verbose()){
+				std::cout << "[rewire_s] ノード" << near_index << "をリワイヤ: コスト関数 = " << edge_cost
+					  << ", 新しい累積コスト = " << new_cost << " (前: " << old_cost << ")" << std::endl;
+			}
 			update_subtree_after_rewire_s(near_index);
 			rewired = true;
 		}
@@ -2293,8 +2310,10 @@ bool RRTStarConnect::rewire_g(int q_new_index, const std::vector<int>& q_near)
 			g_tree.set_parent_index(near_index, q_new_index);
 			validnode.cost = new_cost;
 			g_tree.get_RRTNode(near_index) = validnode;
-			std::cout << "[rewire_g] ノード" << near_index << "をリワイヤ: コスト関数 = " << edge_cost 
-				  << ", 新しい累積コスト = " << new_cost << " (前: " << old_cost << ")" << std::endl;
+			if(rrtstar_verbose()){
+				std::cout << "[rewire_g] ノード" << near_index << "をリワイヤ: コスト関数 = " << edge_cost
+					  << ", 新しい累積コスト = " << new_cost << " (前: " << old_cost << ")" << std::endl;
+			}
 			update_subtree_after_rewire_g(near_index);
 			rewired = true;
 		}
@@ -2377,26 +2396,12 @@ void RRTStarConnect::update_subtree_after_rewire_g(int index)
 
 std::vector<int> RRTStarConnect::get_children_indices_s(int parent)
 {
-	std::vector<int> children;
-	for(int i = 0; i < s_tree.size(); ++i){
-		if(i == parent) continue;
-		if(s_tree.get_parent_index(i) == parent){
-			children.push_back(i);
-		}
-	}
-	return children;
+	return s_tree.get_children_indices(parent);
 }
 
 std::vector<int> RRTStarConnect::get_children_indices_g(int parent)
 {
-	std::vector<int> children;
-	for(int i = 0; i < g_tree.size(); ++i){
-		if(i == parent) continue;
-		if(g_tree.get_parent_index(i) == parent){
-			children.push_back(i);
-		}
-	}
-	return children;
+	return g_tree.get_children_indices(parent);
 }
 
 void RRTStarConnect::repair_failed_branch_s(int root_index)
@@ -2448,7 +2453,7 @@ void RRTStarConnect::repair_failed_branch_s(int root_index)
 		if(visited[index]) continue;
 		visited[index] = true;
 
-		s_tree.get_RRTNode(index).is_valid = false;
+		s_tree.invalidate(index);
 
 		std::vector<int> children = get_children_indices_s(index);
 		for(int child_index : children){
@@ -2508,7 +2513,7 @@ void RRTStarConnect::repair_failed_branch_g(int root_index)
 		if(visited[index]) continue;
 		visited[index] = true;
 
-		g_tree.get_RRTNode(index).is_valid = false;
+		g_tree.invalidate(index);
 
 		std::vector<int> children = get_children_indices_g(index);
 		for(int child_index : children){
@@ -2532,14 +2537,16 @@ bool RRTStarConnect::validate_edge_s(int parent_index, const Node& child_node, R
         return false;
 	}
 
-    std::cout << "制約pass (RRTStarConnect-s)" << std::endl;
+    if(rrtstar_verbose()) std::cout << "制約pass (RRTStarConnect-s)" << std::endl;
 
     RRTNode validnode(child_node, cfree[0]);
 	double edge_cost = weighted_distance(parent.node, child_node);
 	validnode.cost = parent.cost + edge_cost;
 	validnode.is_valid = true;
-	std::cout << "[validate_edge_s] ノード採用: コスト関数 = " << edge_cost 
-		  << ", 累積コスト = " << validnode.cost << std::endl;
+	if(rrtstar_verbose()){
+		std::cout << "[validate_edge_s] ノード採用: コスト関数 = " << edge_cost
+			  << ", 累積コスト = " << validnode.cost << std::endl;
+	}
 	out_node = validnode;
     return true;
 }
@@ -2564,12 +2571,12 @@ bool RRTStarConnect::validate_edge_g(int parent_index, const Node& child_node, R
 		for(const auto& e : cfree_obj_tmp){
 			bool flag = false;
 			for(int i=0; i<(int)cfree_obj.size(); ++i){
-				if(cfree_obj[i].overlap(e)){	
+				if(cfree_obj[i].overlap(e)){
 					flag = true;
 					break;
 				}
 			}
-			if(flag)	continue;	
+			if(flag)	continue;
 			cfree_obj.push_back(e);
 		}
 	}
@@ -2590,14 +2597,16 @@ bool RRTStarConnect::validate_edge_g(int parent_index, const Node& child_node, R
 
 	if((int)cfree_obj.size() == 0)	return false;
 	else{
-		std::cout << "制約pass (RRTStarConnect-g)" << std::endl;
+		if(rrtstar_verbose()) std::cout << "制約pass (RRTStarConnect-g)" << std::endl;
 
 		RRTNode validnode(child_node, cfree_obj, del_list);
 		double edge_cost = weighted_distance(parent.node, child_node);
 		validnode.cost = parent.cost + edge_cost;
 		validnode.is_valid = true;
-		std::cout << "[validate_edge_g] ノード採用: コスト関数 = " << edge_cost 
-			  << ", 累積コスト = " << validnode.cost << std::endl;
+		if(rrtstar_verbose()){
+			std::cout << "[validate_edge_g] ノード採用: コスト関数 = " << edge_cost
+				  << ", 累積コスト = " << validnode.cost << std::endl;
+		}
 		out_node = validnode;
 		return true;
 	}
@@ -2610,5 +2619,16 @@ std::vector<PointCloud> RRTStarConnect::extract_cfree_s(int parent_index, const 
 
 std::vector<PointCloud> RRTStarConnect::extract_cfree_g(int parent_index, const Node& child_node)
 {
-    return strategy->extract(g_tree.get_RRTNode(parent_index).pc(), child_node);
+	RRTNode& parent = g_tree.get_RRTNode(parent_index);
+	std::vector<PointCloud> result;
+
+	for(const auto& cfree: parent.get_cfree_obj()){
+		std::vector<PointCloud> tmp = strategy->extract(cfree, child_node);
+		for(const auto& e: tmp){
+			if(duplicate_check(e, result)) continue;
+			result.push_back(e);
+		}
+	}
+
+	return result;
 }

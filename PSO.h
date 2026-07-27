@@ -1,5 +1,9 @@
+#pragma once
 
 #include <climits>
+#include <cstddef>
+#include <string>
+#include <vector>
 
 #include "icmMath.h"
 #include "CFreeICS.h"
@@ -11,131 +15,108 @@
 #define WIDTH 20.0
 #define th_max 140.0
 
-
 double caging_func(Node node);
 
+enum class PsoObjectiveMode
+{
+	Legacy,
+	Fast
+};
+
+enum class PsoOptimizerKind
+{
+	BaselinePSO,
+	ConstrictionLBestPSO,
+	CLPSO,
+	JADEDE,
+	HHO,
+	HybridJADEPattern,
+	CompareAll
+};
+
+struct PsoConfig
+{
+	PsoObjectiveMode objective_mode = PsoObjectiveMode::Legacy;
+	PsoOptimizerKind optimizer_kind = PsoOptimizerKind::BaselinePSO;
+	int repeat_times = 200;
+	int particle_nums = 100;
+	int max_evaluations = 0;
+	unsigned int seed = 0;
+	double diffusion_width = WIDTH;
+	bool verbose = true;
+	bool progress = true;
+	bool log_csv = false;
+	bool compare_legacy_fast = false;
+	std::string csv_path = "pso_runs.csv";
+};
+
+struct PsoRunResult
+{
+	Node best_node;
+	double best_score = 1000.0;
+	int evaluations = 0;
+	double elapsed_sec = 0.0;
+	std::string optimizer_name;
+	std::string objective_name;
+};
+
+class CSpaceConfig;
+
+class FastCagingObjective
+{
+private:
+	State3D goal;
+	Controller* controller;
+	CSpaceConfig* conf;
+	State3D bottom;
+	State3D top;
+	Vector3D<int> range;
+	int numx;
+	int numy;
+	int numth;
+	std::size_t total_size;
+	std::vector<unsigned int> visited_stamp;
+	unsigned int current_stamp;
+	int evaluations;
+	bool progress;
+
+	int coord_to_axis_index(int value, int origin, int step, int count) const;
+	std::size_t coord_to_flat_index(int ix, int iy, int ith) const;
+	State3D axis_to_state(int ix, int iy, int ith) const;
+	bool mark_visited(std::size_t index);
+	bool is_free_state(const State3D& state);
+
+	struct ComponentStats
+	{
+		bool has_free_state = false;
+		bool touches_workspace_edge = false;
+		bool contains_goal_line = false;
+		int min_goal_x = INT_MAX;
+		int max_goal_x = INT_MIN;
+		double max_ytheta_dist = 0.0;
+	};
+
+	ComponentStats explore_component(int seed_ix, int seed_iy, int seed_ith);
+
+public:
+	FastCagingObjective(bool _progress = false);
+
+	double evaluate(Node node);
+	int get_evaluations() const { return evaluations; }
+};
 
 class PSO
 {
 private:
-	std::vector<Node> particles;
-	std::vector<Node> velocity;
-	std::vector<Node> personal_best;
-	std::vector<double> personal_score;
-	Node global_best;
-	double global_score;
-
-	int repeat_times, particle_nums;
+	PsoConfig config;
 
 public:
-	PSO(int _repeat_times, int _particle_nums)
-		:repeat_times(_repeat_times), 
-	     particle_nums(_particle_nums)
-	{
-	}
+	PSO(int _repeat_times, int _particle_nums);
+	PSO();
 
-	PSO()
-		:repeat_times(200),
-		 particle_nums(100)
-	{}
+	void set_config(const PsoConfig& cfg);
+	PsoRunResult optimize_result(Node ini);
 
-	std::vector<double> optimize(Node ini)
-	{
-		init(ini);
-
-		for(int i=0; i<repeat_times; ++i)
-		{
-			std::cout << i << ": " << std::endl;
-			update_personal();
-			update_global();
-		}
-
-		std::cout << global_best << std::endl;
-		return std::vector<double>();
-	}
-
-
-	void init(Node ini)
-	{
-		std::srand(time(NULL));
-
-		double diffusion_width = WIDTH;
-		for(int i=0; i<particle_nums; ++i){
-			std::vector<double> tmpnode;
-			for(int n=0; n<Node::dof; ++n){
-				double random = (double)rand()/RAND_MAX;
-				double tmpangle = ini.get_element(n) + diffusion_width*random - (diffusion_width/2); //ini.get_element(n) + diffusion_width*random - (diffusion_width/2);を変更	
-				if(tmpangle>th_max)		tmpangle=th_max;
-				if(tmpangle<-th_max)	tmpangle=-th_max;
-				tmpnode.push_back(tmpangle);
-			}
-			assert(tmpnode.size() == 6);
-			particles.push_back(Node(tmpnode));
-		}
-	
-		velocity.resize(particle_nums);
-
-		personal_best = particles;
-		for(int i=0; i<(int)personal_best.size(); ++i){
-			double tmpscore = caging_func(personal_best[i]);
-			personal_score.push_back(tmpscore);
-			std::cout << personal_best[i] << " : " << tmpscore << std::endl;
-		}
-	
-		double tmpmin = DBL_MAX;	int global_index = 0;
-		for(int i=0; i<(int)personal_score.size(); ++i){
-			if(tmpmin > personal_score[i]){
-				tmpmin = personal_score[i];
-				global_index = i;
-			}
-		}
-		global_best = personal_best[global_index];
-		global_score = tmpmin;
-
-		std::cout << "\nglobal best -> " << global_best << " : " << global_score << std::endl << std::endl;
-	}
-
-
-
-	void update_personal()
-	{
-		static int cnt = 0;	++cnt;
-		const double wh = 1.2, wl = 0.3;
-		const double c1 = 0.7, c2 = 0.2;
-		double w = wh - (wh - wl)*cnt/repeat_times; 
-
-		for(int i=0; i<(int)particles.size(); ++i){
-			double r1 = (double)rand()/RAND_MAX;
-			double r2 = (double)rand()/RAND_MAX;
-			velocity[i] = velocity[i] * w +
-				r1 * c1 * (personal_best[i] - particles[i]) + 
-				r2 * c2 * (global_best - particles[i]);
-			particles[i] = particles[i] + velocity[i];
-			for(int n=0; n<Node::dof; ++n){
-				if(particles[i][n]>th_max)	particles[i][n] = th_max;
-				if(particles[i][n]<-th_max)	particles[i][n] = -th_max;
-			}
-
-			double tmpscore = caging_func(particles[i]);
-			if(tmpscore < personal_score[i]){
-				personal_score[i] = tmpscore;
-				personal_best[i] = particles[i];
-			}
-			std::cout << i << ":" << personal_best[i] << " -> " << tmpscore << std::endl;
-		}
-	}
-
-
-	void update_global()
-	{
-		for(int i=0; i<(int)personal_best.size(); ++i){
-			if(personal_score[i] < global_score){
-				global_score = personal_score[i];
-				global_best = personal_best[i];
-			}
-		}
-		std::cout << "\nglobal best -> " << global_best << " : " << global_score << std::endl << std::endl;
-	}
-
+	// Compatibility entry point used by main.cpp.
+	std::vector<double> optimize(Node ini);
 };
-

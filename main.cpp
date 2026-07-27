@@ -13,14 +13,20 @@
 #include "TShape.h"
 #include "clusters.h"
 #include "SpaceConfig.h"
+#include "GoalExpansionSearch.h"
 
 #include <cassert>
 #include <ctime>
 #include <iostream>
 #include <chrono>
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
 #include <iomanip>
 #include <string>
 #include <fstream>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 //#pragma warning(disable : 4996)
 
@@ -35,8 +41,100 @@ std::string get_time_now()
 	return std::string(date);
 }
 
+namespace {
+
+bool ensure_directory(const std::string& path)
+{
+	struct stat st;
+	if (stat(path.c_str(), &st) == 0) {
+		return S_ISDIR(st.st_mode);
+	}
+	if (mkdir(path.c_str(), 0775) == 0) return true;
+	return errno == EEXIST;
+}
+
+void write_cluster_csv(const std::string& path, const PointCloud& pc)
+{
+	std::ofstream ofs(path);
+	for (int i = 0; i < pc.size(); ++i) {
+		ofs << pc.get(i).x << "," << pc.get(i).y << "," << pc.get(i).th << "\n";
+	}
+}
+
+int export_initial_clusters_cli(int argc, char* argv[])
+{
+	std::string output_dir = "../ICM_Log/initial_clusters";
+	for (int i = 2; i < argc; ++i) {
+		std::string arg = argv[i];
+		if (arg == "--output-dir" && i + 1 < argc) {
+			output_dir = argv[++i];
+		}
+		else {
+			std::cerr << "Unknown option: " << arg << std::endl;
+			return 2;
+		}
+	}
+
+	if (!ensure_directory("../ICM_Log")) {
+		std::cerr << "Failed to create ../ICM_Log" << std::endl;
+		return 3;
+	}
+	if (!ensure_directory(output_dir)) {
+		std::cerr << "Failed to create " << output_dir << std::endl;
+		return 4;
+	}
+
+	Node initial = read_initial();
+	CFreeICS ics(initial);
+	std::vector<PointCloud> clusters = ics.extract();
+
+	std::string manifest_path = output_dir + "/manifest.csv";
+	std::ofstream manifest(manifest_path);
+	manifest << "id,size,min_x,max_x,min_y,max_y,min_th,max_th,file\n";
+
+	for (int idx = 0; idx < (int)clusters.size(); ++idx) {
+		const PointCloud& pc = clusters[idx];
+		int min_x = INT_MAX, min_y = INT_MAX, min_th = INT_MAX;
+		int max_x = INT_MIN, max_y = INT_MIN, max_th = INT_MIN;
+
+		for (int j = 0; j < pc.size(); ++j) {
+			State3D p = pc.get(j);
+			if (p.x < min_x) min_x = p.x;
+			if (p.x > max_x) max_x = p.x;
+			if (p.y < min_y) min_y = p.y;
+			if (p.y > max_y) max_y = p.y;
+			if (p.th < min_th) min_th = p.th;
+			if (p.th > max_th) max_th = p.th;
+		}
+
+		std::string cluster_path = output_dir + "/cluster_" + std::to_string(idx) + ".csv";
+		write_cluster_csv(cluster_path, pc);
+
+		manifest << idx << "," << pc.size() << ","
+		         << min_x << "," << max_x << ","
+		         << min_y << "," << max_y << ","
+		         << min_th << "," << max_th << ","
+		         << cluster_path << "\n";
+
+		std::cout << "CLUSTER," << idx << "," << pc.size() << ","
+		          << min_x << "," << max_x << ","
+		          << min_y << "," << max_y << ","
+		          << min_th << "," << max_th << ","
+		          << cluster_path << std::endl;
+	}
+
+	std::cout << "MANIFEST," << manifest_path << std::endl;
+	return 0;
+}
+
+} // namespace
+
 int main(int argc, char* argv[])
 {
+	if (argc >= 2 && std::string(argv[1]) == "--export-initial-clusters") {
+		return export_initial_clusters_cli(argc, argv);
+	}
+
 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
 	std::string fn = get_time_now();
 	log << "\n\n\n" << fn << std::endl;
@@ -51,6 +149,7 @@ int main(int argc, char* argv[])
 	std::cout << "Path Shortcut               -> 5" << std::endl;
 	std::cout << "Debug                       -> 6" << std::endl;
 	std::cout << "Calc Cluster                -> 7" << std::endl;
+	std::cout << "Expand hand until goal      -> 71" << std::endl;
 	std::cout << "Form Closure                -> 8" << std::endl;
 	std::cout << "Optimization                -> 9" << std::endl;
 	std::cout << "----------------------------------------------\n";
@@ -65,7 +164,7 @@ int main(int argc, char* argv[])
     int i = 0;
     std::cout << ">";
     std::cin >> i;
-	assert(i >= 0 && i <= 16);
+	assert((i >= 0 && i <= 16) || i == 71);
 
     if (i == 0) {
         log << "--Update SpaceConfig--" << std::endl;
@@ -167,8 +266,17 @@ int main(int argc, char* argv[])
 	else if(i == 7){
 		log << "--Calculate C_free_ICS--" << std::endl;
 		Node node(
-            26.1206, -7.1423, -72.951, 36.6407, -18.4994, -29.9335
-        );
+			40	,-50,	-30	,40	,-50,	-30
+
+// 25.6445, -24.1716, -56.1724, 20.1695, -26.2026, -30.1004
+// 68.0184	,-121.292	,50.8398	,0.142578,	41.1875	,-89.027
+// 68.466797, -115.224609, 49.306641, 3.251953, 41.308594, -88.857422
+
+		// 17.99825, -5.15974, 47.98144, 24.65858, -31.44068, -52.88569
+		// 25.64454, -18.67163, -12.17236, 22.16946, -26.20265, -29.60044
+            // 26.1206, -7.1423, -72.951, 36.6407, -18.4994, -29.9335
+        // 32.431641, -39.814453, -25.136719, -4.218750, 45.087891, -75.410156
+		);
 
 		CFreeICS ics(node);
 		std::vector<PointCloud> cics = ics.extract();
@@ -194,8 +302,66 @@ int main(int argc, char* argv[])
         return 0;
 	}
 
+	else if(i == 71){
+		log << "--Expand hand until goal--" << std::endl;
+		Node node(
+			71.542969, -105.029297, 31.728516, -7.734375, 46.318359, -74.355469
+			// 32.431641, -39.814453, -25.136719, -4.218750, 45.087891, -75.410156
+			// 68.0184, -121.292, 50.8398,0.142578, 41.1875, -89.027
+		);
+
+		GoalExpansionConfig cfg;
+		cfg.step_mm = 1.0;
+		cfg.max_steps = 80;
+		cfg.local_goal_x_window_mm = 80.0;
+		cfg.require_closed_cluster = true;
+		cfg.verbose = true;
+
+		GoalExpansionSearch search(cfg);
+		GoalExpansionResult result = search.search(node);
+
+		NodeList tried;
+		for(const Node& tried_node : result.trajectory){
+			tried.push_back(tried_node);
+		}
+		std::string outname = "goal_expand_" + fn;
+		tried.print_file(outname);
+
+		if(result.found){
+			std::cout << "[FOUND] expanded_mm=" << result.expanded_mm
+			          << " goal_line_x=[" << result.goal_line.min_x
+			          << "," << result.goal_line.max_x << "]"
+			          << " goal_line_count=" << result.goal_line.count
+			          << " score=" << result.score
+			          << " node=" << result.node << std::endl;
+			log << "[FOUND] expanded_mm=" << result.expanded_mm
+			    << " goal_line_x=[" << result.goal_line.min_x
+			    << "," << result.goal_line.max_x << "]"
+			    << " goal_line_count=" << result.goal_line.count
+			    << " score=" << result.score
+			    << " node=" << result.node << std::endl;
+		}
+		else{
+			std::cout << "[NOT FOUND] max expanded_mm=" << result.expanded_mm
+			          << " last_score=" << result.score
+			          << " last_node=" << result.node << std::endl;
+			if(result.ik_failed){
+				std::cout << "[WARN] IK update failed before max_steps." << std::endl;
+			}
+			log << "[NOT FOUND] max expanded_mm=" << result.expanded_mm
+			    << " last_score=" << result.score
+			    << " last_node=" << result.node << std::endl;
+		}
+		std::cout << "[DONE] Tried nodes saved to ../ICM_Log/path/" << outname << ".csv\n";
+        return 0;
+	}
+
 	else if(i == 8){
-		Node fin(34.338, -49.249, -51.9, 29.55, -46.73, -38.71);
+		Node fin(
+					25.64454, -18.67163, -12.17236, 22.16946, -26.20265, -29.60044
+
+			// 27.5889, -39.7632, -38.6296, 32.2533, -36.8197, -11.0364
+		);
 		FormClosure fc(fin);
 		fc.close();
 		Node fcfin = fc.get_fcangle();
@@ -204,7 +370,13 @@ int main(int argc, char* argv[])
 	}
 
 	else if(i == 9){
-		Node fin(-1.494141,32.75,-95.537109,34.771484,-52.855469,-21.105469);
+		Node fin(68.018359,
+-121.291797,
+50.839844,
+0.142578,
+41.1875,
+-89.026953);
+			// -1.494141,32.75,-95.537109,34.771484,-52.855469,-21.105469);
 
 		PSO opti;
 		opti.optimize(fin);

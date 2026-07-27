@@ -1,11 +1,13 @@
 TARGET = Manipulation
+DIAG_TARGET = DiagnoseGoalNeighborhood
 
 SRCS =  main.cpp 
 SRCS += icmMath.cpp CSpace.cpp RRT.cpp CFree.cpp CFreeICS.cpp
 SRCS += Labeling.cpp Link.cpp Node.cpp OneHand.cpp PointCloud.cpp Rectangle.cpp Planner.cpp FormClosure.cpp PSO.cpp
-SRCS += Robot.cpp RRTTree.cpp Shape.cpp Square.cpp Wall.cpp LShape.cpp TaskSet.cpp Problem.cpp Controller.cpp pathsmooth.cpp pathshortcut.cpp TShape.cpp Triangle.cpp SpectralUtil.cpp GraphUtils.cpp clusters.cpp SpaceConfig.cpp RRTStar.cpp
+SRCS += Robot.cpp RRTTree.cpp Shape.cpp Square.cpp Wall.cpp LShape.cpp TaskSet.cpp Problem.cpp Controller.cpp pathsmooth.cpp pathshortcut.cpp TShape.cpp Triangle.cpp SpectralUtil.cpp GraphUtils.cpp clusters.cpp SpaceConfig.cpp RRTStar.cpp GoalExpansionSearch.cpp
 #  InformedRRTStar.cpp
 OBJS = $(SRCS:.cpp=.o)
+DIAG_OBJS = diagnose_goal_neighborhood.o $(filter-out main.o,$(OBJS))
 
 CXX = g++
 #CXXFLAGS = -g -Wall
@@ -20,6 +22,7 @@ INCDIR = -I/usr/include -I.
 #LIBS = -lompl -lmlpack
 
 all: $(TARGET)
+diagnose: $(DIAG_TARGET)
 
 .cpp.o:
 	$(CXX) $(CXXFLAGS) $(INCDIR) -o $@ -c $<
@@ -29,8 +32,11 @@ $(TARGET): $(OBJS)
 #以下以前
 # 	$(CXX) -o $@ $^ $(LIBDIR) $(LIBS)
 
+$(DIAG_TARGET): $(DIAG_OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBDIR) $(LIBS)
+
 clean:
-	rm -f *.o $(TARGET)
+	rm -f *.o $(TARGET) $(DIAG_TARGET)
 #以下以前
 # 	rm -f *.o
 

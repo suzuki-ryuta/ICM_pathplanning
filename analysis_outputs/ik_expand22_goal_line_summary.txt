@@ -1,0 +1,10 @@
+node=71.235700,-118.753000,52.163200,3.380790,42.950000,-88.315100
+goal=0,200,0
+free_goal_line_states=406
+escape_found=0
+truncated=1
+visited_states=2000000
+boundary=
+start=-198,200,0
+boundary_state=0,0,0
+path_length=0

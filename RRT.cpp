@@ -3,17 +3,48 @@
 #include<chrono>
 #include<climits>
 #include<cstdlib>
+#include<array>
+#include<string>
 
 #include "RRT.h"
 #include "CFreeICS.h"
 #include "Robot.h"
 #include "CFree.h"
 #include "pathsmooth.h"
-#include "Profiler.h"
 
 
 int origin = -1;
 using namespace std::chrono;
+
+namespace {
+
+struct JointSamplingRange
+{
+	std::array<int, Node::dof> lower;
+	std::array<int, Node::dof> upper;
+};
+
+JointSamplingRange read_joint_sampling_range()
+{
+	bp::ptree pt;
+	read_ini("config/RobotConfig.ini", pt);
+
+	JointSamplingRange range;
+	for (int i = 0; i < Node::dof; ++i) {
+		const std::string key = "joint_sampling_range.joint" + std::to_string(i + 1);
+		range.lower[i] = pt.get<int>(key + "_min");
+		range.upper[i] = pt.get<int>(key + "_max");
+		if (range.lower[i] > range.upper[i]) {
+			std::cerr << "Invalid RobotConfig.ini joint_sampling_range: "
+			          << key << "_min is greater than " << key << "_max" << std::endl;
+			std::exit(EXIT_FAILURE);
+		}
+	}
+
+	return range;
+}
+
+} // namespace
 
 void RRT::set_strategy(CFO* cfo)
 {
@@ -23,19 +54,11 @@ void RRT::set_strategy(CFO* cfo)
 
 bool RRT::initialize(Node ini)
 {
-	PROFILE_SCOPE("RRT.initialize.total");
 	tree.push_back(ini, origin);
 	CFreeICS ics(ini);
 	std::cout << ini << std::endl;
-	{
-		PROFILE_SCOPE("RRT.initialize.robot_update");
-		if (!robot_update(ini))	return false;
-	}
-	std::vector<PointCloud> init_CFree;
-	{
-		PROFILE_SCOPE("RRT.initialize.ICS_extract");
-		init_CFree = ics.extract();
-	}
+	if (!robot_update(ini))	return false;
+	std::vector<PointCloud> init_CFree = ics.extract();
 	if(init_CFree.size() == 0)	return false;
 	print_ICSs(init_CFree);
 
@@ -51,21 +74,12 @@ bool RRT::initialize(Node ini)
 
 bool RRT::dfsconfig_valid(Node newnode)
 {
-	PROFILE_SCOPE("RRT.validation.total");
-	std::vector<PointCloud> cfo;
-	{
-		PROFILE_SCOPE("RRT.validation.CFO_extract");
-		cfo = strategy->extract(tree.back_parentRRTNode().pc(), newnode);
-	}
+	std::vector<PointCloud> cfo = strategy->extract(tree.back_parentRRTNode().pc(), newnode);
 
 	if((int)cfo.size() == 1){
 		PointCloud C_old = tree.back_parentRRTNode().pc();
 		PointCloud C_new = cfo[0];
-		double iou_val = 0.0;
-		{
-			PROFILE_SCOPE("RRT.validation.IoU_overlap");
-			iou_val = C_old.iou(C_new);
-		}
+		double iou_val = C_old.iou(C_new);
 		if (iou_val >= iou_threshold) {
 			RRTNode validnode(newnode, cfo[0]);
 			tree.replace(validnode);
@@ -83,7 +97,6 @@ bool RRT::dfsconfig_valid(Node newnode)
 
 Node RRT::sampling(Node Rand)
 {
-	PROFILE_SCOPE("RRT.sampling.total");
 	static int loop = 0;
 	loop++;
 	Node newnode;
@@ -128,7 +141,6 @@ Node RRT::format_around(Node rand)
 
 GoalJudge RRT::goal_judge(State3D goal)
 {
-	PROFILE_SCOPE("RRT.goal_judge");
 	PointCloud pc = tree.back_RRTNode().pc();
     const double around_rate = 1.5;
     double max_dist = DBL_MIN;
@@ -206,7 +218,6 @@ RRT::RRT()
 
 NodeList RRT::plan(Node ini, Node fin, State3D goal)
 {
-	ScopedProfiler::reset();
 	rand_init();
 
 	if (!initialize(ini)) {
@@ -214,8 +225,6 @@ NodeList RRT::plan(Node ini, Node fin, State3D goal)
 		return NodeList();
 	}
 	auto start = std::chrono::system_clock::now();
-	const char* profile_limit_env = std::getenv("RRT_PROFILE_ITER_LIMIT");
-	const int profile_iter_limit = profile_limit_env ? std::atoi(profile_limit_env) : 0;
 
 	while (1)
 	{
@@ -223,20 +232,11 @@ NodeList RRT::plan(Node ini, Node fin, State3D goal)
 		++i;
 		if (i > 300000)	exit(5963);
 		// Random sampling and format
-		Node Rand;
-		{
-			PROFILE_SCOPE("RRT.generate_newnode");
-			Rand = generate_newnode();
-		}
+		Node Rand = generate_newnode();
 		Node newnode = sampling(Rand);
 
 		// Validation
-		bool robot_ok = false;
-		{
-			PROFILE_SCOPE("RRT.robot_update");
-			robot_ok = robot_update(newnode);
-		}
-		if (!robot_ok){
+		if (!robot_update(newnode)){
 			tree.pop_back();
 			continue;
 		}
@@ -249,19 +249,12 @@ NodeList RRT::plan(Node ini, Node fin, State3D goal)
 		GoalJudge flag = goal_judge(goal);
 		if (flag == GoalJudge::MiddleGoal)	add_garound();
 		if (flag == GoalJudge::Goal)	break;
-		if (profile_iter_limit > 0 && i >= profile_iter_limit) {
-			std::cout << "[PROFILE] stopped at iteration " << i
-			          << " by RRT_PROFILE_ITER_LIMIT=" << profile_iter_limit << std::endl;
-			break;
-		}
 	}
 
 	auto end = std::chrono::system_clock::now();
 	auto dur = end - start;
 	auto sec = std::chrono::duration_cast<std::chrono::seconds>(dur).count();
 	std::cout << "Elapsed time [s] :";	std::cout << sec << std::endl;
-	const double total_ms = std::chrono::duration<double, std::milli>(dur).count();
-	ScopedProfiler::report("Forward RRT", total_ms);
 
 	return tree.generate_path();
 }
@@ -423,19 +416,39 @@ GoalJudge RevRRT::goal_judge(std::vector<PointCloud> pcs)
 //    }
 //    return GoalJudge::Goal;
 
-	static int maxi = 0;
-	int nu = 1000;
-	for(int i=0; i<(int)pcs.size(); ++i){
-		if(maxi < pcs[i].size())	maxi = pcs[i].size();
-		if(pcs[i].size() > nu){
-			std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-			log << "Reverse nu : " << nu << std::endl;
-			std::cout << "num: " << pcs[i].size() << std::endl;
+	// static int maxi = 0;
+	// int nu = 1000;
+	// for(int i=0; i<(int)pcs.size(); ++i){
+	// 	if(maxi < pcs[i].size())	maxi = pcs[i].size();
+	// 	if(pcs[i].size() > nu){
+	// 		std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+	// 		log << "Reverse nu : " << nu << std::endl;
+	// 		std::cout << "num: " << pcs[i].size() << std::endl;
 
+	// 		return GoalJudge::Goal;
+	// 	}
+	// }
+	// std::cout << "Maxi: " << maxi << std::endl;
+	// return GoalJudge::NotGoal;
+
+		// Evaluate goal by approximate C-space volume: voxel_volume * number_of_points
+	CSpaceConfig* cs = CSpaceConfig::get_instance();
+	Vector3D<int> range = cs->getrange();
+	double voxel_volume = (double)range.x * (double)range.y * (double)range.z; // 単位は (x*y*th)
+
+	static double max_volume = 0.0;
+	double nu = 100000.0; // 閾値（もともとは点数ベースだった値を体積単位として扱う）250000.0
+	for (int i = 0; i < (int)pcs.size(); ++i) {
+		double vol = pcs[i].size() * voxel_volume;
+		if (vol > max_volume) max_volume = vol;
+		if (vol > nu) {
+			std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+			log << "Reverse volume threshold (nu) : " << nu << " voxel_vol: " << voxel_volume << " cluster_vol: " << vol << std::endl;
+			std::cout << "cluster points: " << pcs[i].size() << "  cluster_vol: " << vol << std::endl;
 			return GoalJudge::Goal;
 		}
 	}
-	std::cout << "Maxi: " << maxi << std::endl;
+	std::cout << "Max volume so far: " << max_volume << std::endl;
 	return GoalJudge::NotGoal;
 }
 
@@ -588,12 +601,12 @@ bool RRTConnect::gconf_update()
 
 GoalJudge RRTConnect::sconf_goaljudge(State3D goal, RRTNode bef, RRTNode aft)
 {
-	if(goal_sconf(goal) == GoalJudge::SGoal){
-		std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-		log << "Forward Goal\n";
-		std::cout << "Start conf reached to the goal" << std::endl;
-		return GoalJudge::SGoal;
-	}
+	// if(goal_sconf(goal) == GoalJudge::SGoal){
+	// 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+	// 	log << "Forward Goal\n";
+	// 	std::cout << "Start conf reached to the goal" << std::endl;
+	// 	return GoalJudge::SGoal;
+	// }
 	if(goal_connect(bef, aft) == GoalJudge::Connect){
 		std::ofstream log("../ICM_Log/icm.log", std::ios::app);
 		log << "Connect Goal\n";
@@ -607,12 +620,12 @@ GoalJudge RRTConnect::sconf_goaljudge(State3D goal, RRTNode bef, RRTNode aft)
 
 GoalJudge RRTConnect::gconf_goaljudge(std::vector<PointCloud> cfo, RRTNode bef, RRTNode aft)
 {
-	if(goal_gconf(cfo) == GoalJudge::GGoal){
-		std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-		log << "Reverse Goal\n";
-		std::cout << "Goal conf reached to desire start condition." << std::endl;
-		return GoalJudge::GGoal;
-	}
+	// if(goal_gconf(cfo) == GoalJudge::GGoal){
+	// 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+	// 	log << "Reverse Goal\n";
+	// 	std::cout << "Goal conf reached to desire start condition." << std::endl;
+	// 	return GoalJudge::GGoal;
+	// }
 	if(goal_connect(bef, aft) == GoalJudge::Connect){
 		std::ofstream log("../ICM_Log/icm.log", std::ios::app);
 		log << "Connect Goal\n";
@@ -673,9 +686,7 @@ bool RRTConnect::caging_validation_gconf(Node newnode)
 
 	if((int)cfree_obj.size() == 0)	return false;
 	else{
-		// 複数のクラスタがある場合は、最初のもののみを使用
-		PointCloud merged_cfree = cfree_obj[0];
-		RRTNode validnode(newnode, merged_cfree);
+		RRTNode validnode(newnode, cfree_obj, del_list);
 		g_tree.replace(validnode);
 		return true;
 	}
@@ -721,24 +732,19 @@ GoalJudge RRTConnect::goal_connect(RRTNode bef, RRTNode aft)
 
 	std::vector<PointCloud> bef_cfree = bef.get_cfree_obj();
 	std::vector<PointCloud> aft_cfree = aft.get_cfree_obj();
-	std::vector<PointCloud> overlap_cfree;
 
-	for(const auto& bfree: bef_cfree){
-		for(const auto& afree: aft_cfree){
-			bool tof = bfree.overlap(afree);
-			if(!tof){
-				return GoalJudge::NotGoal;
-			}
+	if(bef_cfree.size() != 1) return GoalJudge::NotGoal;
+
+	std::vector<PointCloud> overlap_cfree = strategy->extract(bef_cfree[0], aft.getNode());
+	if(overlap_cfree.size() != 1) return GoalJudge::NotGoal;
+	
+	for(const auto& afree: aft_cfree){
+		if(overlap_cfree[0].overlap(afree)){
+			return GoalJudge::Connect;
 		}
 	}
 
-	assert(bef_cfree.size() == 1);
-	overlap_cfree = strategy->extract(bef_cfree[0], aft.getNode());
-	
-	if(overlap_cfree.size() == 1){
-		return GoalJudge::Connect;
-	}
-	else return GoalJudge::NotGoal;
+	return GoalJudge::NotGoal;
 }
 
 
@@ -985,7 +991,7 @@ NodeList RRTConnect::plan(Node ini, Node fin, State3D goal)
 void rand_init()
 {
     std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-    unsigned int seed = 7070;  // ★ 固定値にする（例: 0や42など）
+    unsigned int seed = 56937;  // ★ 固定値にする（例: 0や42など）
 
     log << "Seed : " << seed << " (fixed)" << std::endl;
     std::srand(seed);
@@ -994,10 +1000,11 @@ void rand_init()
 
 Node generate_newnode()
 {
+	static const JointSamplingRange range = read_joint_sampling_range();
 	std::vector<double> vecrand(6);
 	for (int i = 0; i < 6; ++i) {
 		// vecrand[i] = std::rand() % 181 - 90;//+-90度の範囲でランダムな角度を生成
-		vecrand[i] = std::rand() % 281 - 140;//+-140度の範囲でランダムな角度を生成
+		vecrand[i] = std::rand() % (range.upper[i] - range.lower[i] + 1) + range.lower[i];//関節ごとの範囲でランダムな角度を生成
 
 	}
 	return Node(vecrand);

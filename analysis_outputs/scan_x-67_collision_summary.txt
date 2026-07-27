@@ -1,0 +1,14 @@
+node=68.466797,-115.224609,49.306641,3.251953,41.308594,-88.857422
+state=-67,200,0
+robot_self_collision=0
+robot_wall_collision=0
+object_robot_collision=1
+object_wall_collision=0
+link_0_collision=0
+link_1_collision=0
+link_2_collision=1
+link_3_collision=1
+link_4_collision=0
+link_5_collision=0
+link_6_collision=0
+link_7_collision=0

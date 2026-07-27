@@ -1,9 +1,15 @@
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include "Node.h"
 #include "PointCloud.h"
+
+#ifndef NANOFLANN_FIRST_MATCH
+#define NANOFLANN_FIRST_MATCH
+#endif
+#include "nanoflann.hpp"
 
 
 // To unify the datatype with RRTNodeList
@@ -31,11 +37,11 @@ public:
 
 struct RRTNode
 {
-	Node node;		//    { b g U   R x ̊֐ߊp x  RRT ̂P m [ h ɑ   
-	std::vector<PointCloud> cfree_obj;		// @C_free_ics ̓  C Ó  Ɣ  肳 ꂽ ̈ 
-	std::vector<PointCloud> cfree_del;		//  C_free_ics ̓  C Ó  ł͂Ȃ  Ɣ  肳 ꂽ ̈ 
+	Node node;		//    { b g U   R x ̊֐ߊp x  RRT ̂P m [ h ɑ
+	std::vector<PointCloud> cfree_obj;		// @C_free_ics ̓  C Ó  Ɣ  肳 ꂽ ̈
+	std::vector<PointCloud> cfree_del;		//  C_free_ics ̓  C Ó  ł͂Ȃ  Ɣ  肳 ꂽ ̈
 	std::vector<PointCloud> cluster_cache;	// 親ノード位置で抽出されたクラスタ情報（リワイヤ時の比較用）
-	
+
 	double cost; // 累積コスト
 	bool is_valid; // 有効フラグ
 
@@ -57,11 +63,33 @@ struct RRTNode
 };
 
 
-class RRTTree 
+class RRTTree
 {
 private:
 	std::vector<RRTNode> graph;
+	std::vector<bool> indexed;
+	std::vector<bool> ever_indexed;
+	std::vector<std::vector<int>> children;
 	NeighborList nl;
+
+	struct NodeCloud {
+		const std::vector<RRTNode>& pts;
+		NodeCloud(const std::vector<RRTNode>& points);
+		inline size_t kdtree_get_point_count() const;
+		inline double kdtree_get_pt(const size_t idx, const size_t dim) const;
+		template <class BBOX>
+		bool kdtree_get_bbox(BBOX&) const;
+	};
+
+	using KDTree = nanoflann::KDTreeSingleIndexDynamicAdaptor<
+		nanoflann::L2_Simple_Adaptor<double, NodeCloud>,
+		NodeCloud,
+		Node::dof>;
+
+	NodeCloud cloud;
+	std::unique_ptr<KDTree> kdtree;
+
+	void rebuild_kdtree();
 
 public:
 	RRTTree(Node ini, int origin);
@@ -74,18 +102,20 @@ public:
 	void push_back(RRTNode targ, int oya);
 	void pop_back();
 	void replace(RRTNode targ);
+	void invalidate(int index);
 	int size();
 
 	RRTNode get_nearest_node(Node targ);
-	RRTNode& get_RRTNode(int index);	
+	RRTNode& get_RRTNode(int index);
 	RRTNode back_RRTNode();
 	RRTNode get_parentRRTNode(int index);
 	RRTNode back_parentRRTNode();
-	 
-	int get_parent_index(int index);		
+
+	int get_parent_index(int index);
+	std::vector<int> get_children_indices(int parent);
 	int get_nearest_index(Node targ);
 	int get_now_index();
-	
+
 	std::vector<int> get_neighbors(int index, double radius); // 近傍ノードのインデックスを取得
 
 	void set_parent_index(int index, int new_parent); // 親インデックスを変更
