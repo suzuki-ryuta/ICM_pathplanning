@@ -141,7 +141,7 @@ void InformedRRTStar::set_strategy(CFO* cfo) { strategy = cfo; }
 InformedRRTStar::InformedRRTStar()
     : tree(),
       garound(),
-      strategy(new DfsCFO()),
+      strategy(make_cfo_strategy()),
       threshold(read_threshold()),
       cluster_distance_threshold(15.0),
       allowed_drop(0),
@@ -417,7 +417,7 @@ void RevInformedRRTStar::set_strategy(CFO* cfo) { strategy = cfo; }
 
 RevInformedRRTStar::RevInformedRRTStar()
     : tree(),
-      strategy(new DfsCFO()),
+      strategy(make_cfo_strategy()),
       cluster_distance_threshold(15.0),
       allowed_drop(0),
       ini_node(),
@@ -602,14 +602,17 @@ double RevInformedRRTStar::calculate_cluster_distance(const PointCloud& old_pc, 
 
 InformedRRTStarGoalJudge RevInformedRRTStar::goal_judge(std::vector<PointCloud> pcs)
 {
-    static int maxi = 0;
-    int nu = 1000;
-    for (int i = 0; i < (int)pcs.size(); ++i) {
-        if (maxi < pcs[i].size()) maxi = pcs[i].size();
-        if (pcs[i].size() > nu) {
-            return InformedRRTStarGoalJudge::Goal;
-        }
-    }
+	static int maxi = 0;
+	int nu = 1000;
+	CSpaceConfig* cs = CSpaceConfig::get_instance();
+	Vector3D<int> range = cs->getrange();
+	for (int i = 0; i < (int)pcs.size(); ++i) {
+		int equivalent_points = (int)std::llround(pcs[i].weighted_size(range));
+		if (maxi < equivalent_points) maxi = equivalent_points;
+		if (equivalent_points > nu) {
+			return InformedRRTStarGoalJudge::Goal;
+		}
+	}
     return InformedRRTStarGoalJudge::NotGoal;
 }
 
@@ -668,7 +671,7 @@ InformedRRTStarConnect::InformedRRTStarConnect()
       g_tree(),
       s_threshold(read_threshold()),
       cluster_distance_threshold(15.0),
-      strategy(new DfsCFO()),
+      strategy(make_cfo_strategy()),
       allowed_drop(0),
       ini_node(),
       fin_node(),
@@ -933,12 +936,15 @@ InformedRRTStarGoalJudge InformedRRTStarConnect::goal_connect(int bef_index, int
 
 InformedRRTStarGoalJudge InformedRRTStarConnect::goal_gconf(std::vector<PointCloud> cfo)
 {
-    static int maxi = 0;
-    int nu = 1000;
-    for (int i = 0; i < (int)cfo.size(); ++i) {
-        if (maxi < cfo[i].size()) maxi = cfo[i].size();
-        if (cfo[i].size() > nu) return InformedRRTStarGoalJudge::GGoal;
-    }
+	static int maxi = 0;
+	int nu = 1000;
+	CSpaceConfig* cs = CSpaceConfig::get_instance();
+	Vector3D<int> range = cs->getrange();
+	for (int i = 0; i < (int)cfo.size(); ++i) {
+		int equivalent_points = (int)std::llround(cfo[i].weighted_size(range));
+		if (maxi < equivalent_points) maxi = equivalent_points;
+		if (equivalent_points > nu) return InformedRRTStarGoalJudge::GGoal;
+	}
     return InformedRRTStarGoalJudge::NotGoal;
 }
 

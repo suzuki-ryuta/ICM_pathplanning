@@ -8,12 +8,17 @@
 struct PointCloud
 {
 	std::vector<State3D> elm;
+	std::vector<Vector3D<int>> cell_size;
+	Vector3D<int> default_cell_size;
+	bool use_default_cell_size;
 
 public:
 	PointCloud();
 	PointCloud(std::vector<State3D> sts);
 
 	void push(State3D st);
+	void push(State3D st, Vector3D<int> cell);
+	void push_from(const PointCloud& pc, int num);
 	void pop();
 
 	// PointCloud.h の public: の中
@@ -27,6 +32,12 @@ public:
 
 	inline int size() const { return (int)elm.size(); }
 	inline State3D get(int num) const { return elm[num]; }
+	Vector3D<int> get_cell_size(int num) const;
+	void set_default_cell_size(Vector3D<int> cell);
+	void set_cell_size_for_all(Vector3D<int> cell);
+	bool has_cell_size() const;
+	bool overlaps_cell(State3D st, Vector3D<int> cell) const;
+	double weighted_size(Vector3D<int> unit) const;
 	inline bool empty() const { return elm.empty(); }  // ← ★これを追加！
 	bool exist(State3D st) const;
 	bool overlap(PointCloud pc) const;

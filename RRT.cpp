@@ -3,6 +3,7 @@
 #include<chrono>
 #include<climits>
 #include<cstdlib>
+#include<cmath>
 #include<array>
 #include<string>
 
@@ -44,6 +45,46 @@ JointSamplingRange read_joint_sampling_range()
 	return range;
 }
 
+int read_adaptive_cfo_int(const std::string& name, int default_value)
+{
+	bp::ptree pt;
+	try {
+		bp::ini_parser::read_ini("config/SpaceConfig.ini", pt);
+		return pt.get<int>("adaptive_cfo." + name, default_value);
+	}
+	catch (...) {
+		return default_value;
+	}
+}
+
+bool adaptive_exact_confirm_accept_enabled()
+{
+	return read_adaptive_cfo_int("enabled", 0) != 0
+	    && read_adaptive_cfo_int("exact_confirm_accept", 1) != 0;
+}
+
+bool adaptive_exact_confirm_goal_connect_enabled()
+{
+	return read_adaptive_cfo_int("enabled", 0) != 0
+	    && read_adaptive_cfo_int("exact_confirm_goal_connect", 0) != 0;
+}
+
+bool adaptive_initial_enabled()
+{
+	return read_adaptive_cfo_int("enabled", 0) != 0
+	    && read_adaptive_cfo_int("initial_enabled", 1) != 0;
+}
+
+std::vector<PointCloud> extract_initial_cfree(Node node, bool use_adaptive_initial)
+{
+	if (use_adaptive_initial) {
+		return extract_adaptive_initial_cfree(node);
+	}
+
+	CFreeICS ics(node);
+	return ics.extract();
+}
+
 } // namespace
 
 void RRT::set_strategy(CFO* cfo)
@@ -55,10 +96,10 @@ void RRT::set_strategy(CFO* cfo)
 bool RRT::initialize(Node ini)
 {
 	tree.push_back(ini, origin);
-	CFreeICS ics(ini);
+	const bool use_adaptive_initial = adaptive_initial_enabled();
 	std::cout << ini << std::endl;
 	if (!robot_update(ini))	return false;
-	std::vector<PointCloud> init_CFree = ics.extract();
+	std::vector<PointCloud> init_CFree = extract_initial_cfree(ini, use_adaptive_initial);
 	if(init_CFree.size() == 0)	return false;
 	print_ICSs(init_CFree);
 
@@ -208,7 +249,7 @@ bool RRT::config_valid(Node newnode)
 
 
 RRT::RRT()
-	:tree(), garound(), strategy(new DfsCFO()), 
+	:tree(), garound(), strategy(make_cfo_strategy()), 
   	threshold(read_threshold())
 {
 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
@@ -271,14 +312,14 @@ void RevRRT::set_strategy(CFO* cfo)
 bool RevRRT::initialize(Node fin)
 {
 	tree.push_back(fin, origin);
-	CFreeICS ics(fin);
+	const bool use_adaptive_initial = adaptive_initial_enabled();
 
 	for(int i=0; i<6;++i){
 		std::cout << fin.get_element(i) << ", ";
 	} std::cout << std::endl;
 	if (!robot_update(fin))	return false;
 
-	std::vector<PointCloud> fin_CFree = ics.extract();
+	std::vector<PointCloud> fin_CFree = extract_initial_cfree(fin, use_adaptive_initial);
 	if(fin_CFree.size() == 0)	return false;
 	print_ICSs(fin_CFree);
 
@@ -287,8 +328,12 @@ bool RevRRT::initialize(Node fin)
 	std::cin >> index;
 	assert(0 <= index && index < (int)fin_CFree.size());
 	PointCloud selected = fin_CFree[index];
-	fin_CFree.erase(fin_CFree.begin() + index);
-	tree.replace(RRTNode(fin, {selected}, fin_CFree));
+	std::vector<PointCloud> fin_del;
+	if (!use_adaptive_initial) {
+		fin_CFree.erase(fin_CFree.begin() + index);
+		fin_del = fin_CFree;
+	}
+	tree.replace(RRTNode(fin, {selected}, fin_del));
 
 	return true;
 }
@@ -436,25 +481,28 @@ GoalJudge RevRRT::goal_judge(std::vector<PointCloud> pcs)
 	Vector3D<int> range = cs->getrange();
 	double voxel_volume = (double)range.x * (double)range.y * (double)range.z; // 単位は (x*y*th)
 
-	static double max_volume = 0.0;
-	double nu = 100000.0; // 閾値（もともとは点数ベースだった値を体積単位として扱う）250000.0
-	for (int i = 0; i < (int)pcs.size(); ++i) {
-		double vol = pcs[i].size() * voxel_volume;
-		if (vol > max_volume) max_volume = vol;
-		if (vol > nu) {
-			std::ofstream log("../ICM_Log/icm.log", std::ios::app);
-			log << "Reverse volume threshold (nu) : " << nu << " voxel_vol: " << voxel_volume << " cluster_vol: " << vol << std::endl;
-			std::cout << "cluster points: " << pcs[i].size() << "  cluster_vol: " << vol << std::endl;
-			return GoalJudge::Goal;
+		static double max_volume = 0.0;
+		double nu = 100000.0; // 閾値（もともとは点数ベースだった値を体積単位として扱う）250000.0
+		for (int i = 0; i < (int)pcs.size(); ++i) {
+			double equivalent_points = pcs[i].weighted_size(range);
+			double vol = equivalent_points * voxel_volume;
+			if (vol > max_volume) max_volume = vol;
+			if (vol > nu) {
+				std::ofstream log("../ICM_Log/icm.log", std::ios::app);
+				log << "Reverse volume threshold (nu) : " << nu << " voxel_vol: " << voxel_volume << " cluster_vol: " << vol << std::endl;
+				std::cout << "cluster points: " << pcs[i].size()
+				          << "  equivalent_points: " << equivalent_points
+				          << "  cluster_vol: " << vol << std::endl;
+				return GoalJudge::Goal;
+			}
 		}
-	}
 	std::cout << "Max volume so far: " << max_volume << std::endl;
 	return GoalJudge::NotGoal;
 }
 
 
 RevRRT::RevRRT()
-	:tree(), strategy(new DfsCFO())
+	:tree(), strategy(make_cfo_strategy())
 {}
 
 
@@ -533,25 +581,26 @@ NodeList RevRRT::plan(Node ini, Node fin, State3D goal)
 
 bool RRTConnect::initialize(Node ini, Node fin)
 {
-	CFreeICS ini_ics(ini), fin_ics(fin);
 	s_tree.push_back(ini, origin);
 	g_tree.push_back(fin, origin);
 	int index1 = -1, index2 = -1;
+	const bool use_adaptive_initial = adaptive_initial_enabled();
 
 	// Setting initial configuration
 	if(!robot_update(ini))	return false;
-	std::vector<PointCloud> ini_CFree = ini_ics.extract();
+	std::vector<PointCloud> ini_CFree = extract_initial_cfree(ini, use_adaptive_initial);
 	if(ini_CFree.size() == 0)	return false;
 	print_ICSs(ini_CFree);
 
 	std::cout << "Select a cluster (start configuration):";
 	std::cin >> index1;
 	assert(0 <= index1 && index1 < (int)ini_CFree.size());
-	s_tree.replace(RRTNode(ini, ini_CFree[index1]));
+	PointCloud selected_ini = ini_CFree[index1];
+	s_tree.replace(RRTNode(ini, selected_ini));
 
 	// Setting goal configuration	
 	if(!robot_update(fin))	return false;
-	std::vector<PointCloud> fin_CFree = fin_ics.extract();
+	std::vector<PointCloud> fin_CFree = extract_initial_cfree(fin, use_adaptive_initial);
 	if(fin_CFree.size() == 0)	return false;
 	print_ICSs(fin_CFree);
 
@@ -559,8 +608,12 @@ bool RRTConnect::initialize(Node ini, Node fin)
 	std::cin >> index2;
 	assert(0 <= index2 && index2 < (int)fin_CFree.size());
 	PointCloud selected = fin_CFree[index2];
-	fin_CFree.erase(fin_CFree.begin() + index2);
-	g_tree.replace(RRTNode(fin, {selected}, fin_CFree));
+	std::vector<PointCloud> fin_del;
+	if (!use_adaptive_initial) {
+		fin_CFree.erase(fin_CFree.begin() + index2);
+		fin_del = fin_CFree;
+	}
+	g_tree.replace(RRTNode(fin, {selected}, fin_del));
 
 	return true;
 }
@@ -599,7 +652,7 @@ bool RRTConnect::gconf_update()
 }
 
 
-GoalJudge RRTConnect::sconf_goaljudge(State3D goal, RRTNode bef, RRTNode aft)
+GoalJudge RRTConnect::sconf_goaljudge(State3D goal, RRTNode bef, RRTNode aft, int sindex, int gindex)
 {
 	// if(goal_sconf(goal) == GoalJudge::SGoal){
 	// 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
@@ -607,7 +660,7 @@ GoalJudge RRTConnect::sconf_goaljudge(State3D goal, RRTNode bef, RRTNode aft)
 	// 	std::cout << "Start conf reached to the goal" << std::endl;
 	// 	return GoalJudge::SGoal;
 	// }
-	if(goal_connect(bef, aft) == GoalJudge::Connect){
+	if(goal_connect(bef, aft, sindex, gindex) == GoalJudge::Connect){
 		std::ofstream log("../ICM_Log/icm.log", std::ios::app);
 		log << "Connect Goal\n";
 		std::cout << "Connect goal!" << std::endl;
@@ -618,7 +671,7 @@ GoalJudge RRTConnect::sconf_goaljudge(State3D goal, RRTNode bef, RRTNode aft)
 }
 
 
-GoalJudge RRTConnect::gconf_goaljudge(std::vector<PointCloud> cfo, RRTNode bef, RRTNode aft)
+GoalJudge RRTConnect::gconf_goaljudge(std::vector<PointCloud> cfo, RRTNode bef, RRTNode aft, int sindex, int gindex)
 {
 	// if(goal_gconf(cfo) == GoalJudge::GGoal){
 	// 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
@@ -626,7 +679,7 @@ GoalJudge RRTConnect::gconf_goaljudge(std::vector<PointCloud> cfo, RRTNode bef, 
 	// 	std::cout << "Goal conf reached to desire start condition." << std::endl;
 	// 	return GoalJudge::GGoal;
 	// }
-	if(goal_connect(bef, aft) == GoalJudge::Connect){
+	if(goal_connect(bef, aft, sindex, gindex) == GoalJudge::Connect){
 		std::ofstream log("../ICM_Log/icm.log", std::ios::app);
 		log << "Connect Goal\n";
 		std::cout << "Connect goal." << std::endl;
@@ -639,9 +692,15 @@ GoalJudge RRTConnect::gconf_goaljudge(std::vector<PointCloud> cfo, RRTNode bef, 
 
 bool RRTConnect::caging_validation_sconf(Node node)
 {
-	std::vector<PointCloud> cfo = strategy->extract(s_tree.back_parentRRTNode().pc(), node); //cfo=c_free_obj.C(t-Δt)とC(t)の共通領域を算出
+	PointCloud parent_pc = s_tree.back_parentRRTNode().pc();
+	std::vector<PointCloud> cfo = strategy->extract(parent_pc, node); //cfo=c_free_obj.C(t-Δt)とC(t)の共通領域を算出
 
 	if((int)cfo.size() == 1){ //ケージング成立条件とケージングマニピュレーション成立条件を同時に評価．C(t-Δt)とC(t)の共通領域が１つ
+		if (exact_confirm_adaptive) {
+			DfsCFO exact;
+			cfo = exact.extract(parent_pc, node);
+			if ((int)cfo.size() != 1) return false;
+		}
 		RRTNode validnode(node, cfo[0]);
 		s_tree.replace(validnode);
 		return true;
@@ -685,11 +744,40 @@ bool RRTConnect::caging_validation_gconf(Node newnode)
 	controller->robot_update(newnode);
 
 	if((int)cfree_obj.size() == 0)	return false;
-	else{
-		RRTNode validnode(newnode, cfree_obj, del_list);
-		g_tree.replace(validnode);
-		return true;
+	if (exact_confirm_adaptive) {
+		std::vector<PointCloud> exact_cfree_obj;
+		std::vector<PointCloud> exact_del_list;
+		DfsCFO exact;
+
+		for(const auto& eo: prev_cfree_obj){
+			std::vector<PointCloud> exact_tmp = exact.extract(eo, newnode);
+			for(const auto& e : exact_tmp){
+				if(duplicate_check(e, exact_cfree_obj)) continue;
+				exact_cfree_obj.push_back(e);
+			}
+		}
+
+		controller->robot_update(parent);
+		for(auto it = exact_cfree_obj.begin(); it != exact_cfree_obj.end(); ){
+			std::vector<PointCloud> prev_real_cfree = exact.extract(*it, parent);
+			if(prev_real_cfree.size() != 1){
+				exact_del_list.push_back(*it);
+				it = exact_cfree_obj.erase(it);
+			}
+			else{
+				++it;
+			}
+		}
+		controller->robot_update(newnode);
+
+		if((int)exact_cfree_obj.size() == 0) return false;
+		cfree_obj = exact_cfree_obj;
+		del_list = exact_del_list;
 	}
+
+	RRTNode validnode(newnode, cfree_obj, del_list);
+	g_tree.replace(validnode);
+	return true;
 }
 
 
@@ -725,7 +813,83 @@ GoalJudge RRTConnect::goal_sconf(State3D goal)
 }
 
 
-GoalJudge RRTConnect::goal_connect(RRTNode bef, RRTNode aft)
+std::vector<PointCloud> RRTConnect::exact_s_cfree(int index)
+{
+	if (index < 0) return {};
+	auto found = exact_s_cfree_cache.find(index);
+	if (found != exact_s_cfree_cache.end()) return found->second;
+
+	RRTNode& node = s_tree.get_RRTNode(index);
+	const int parent_index = s_tree.get_parent_index(index);
+	if (parent_index < 0) {
+		exact_s_cfree_cache[index] = node.get_cfree_obj();
+		return exact_s_cfree_cache[index];
+	}
+
+	std::vector<PointCloud> parent_cfree = exact_s_cfree(parent_index);
+	if (parent_cfree.size() != 1) {
+		exact_s_cfree_cache[index] = {};
+		return {};
+	}
+
+	DfsCFO exact;
+	std::vector<PointCloud> cfree = exact.extract(parent_cfree[0], node.getNode());
+	exact_s_cfree_cache[index] = cfree;
+	return exact_s_cfree_cache[index];
+}
+
+
+std::vector<PointCloud> RRTConnect::exact_g_cfree(int index)
+{
+	if (index < 0) return {};
+	auto found = exact_g_cfree_cache.find(index);
+	if (found != exact_g_cfree_cache.end()) return found->second;
+
+	RRTNode& node = g_tree.get_RRTNode(index);
+	const int parent_index = g_tree.get_parent_index(index);
+	if (parent_index < 0) {
+		exact_g_cfree_cache[index] = node.get_cfree_obj();
+		return exact_g_cfree_cache[index];
+	}
+
+	std::vector<PointCloud> parent_cfree = exact_g_cfree(parent_index);
+	if (parent_cfree.empty()) {
+		exact_g_cfree_cache[index] = {};
+		return {};
+	}
+
+	DfsCFO exact;
+	std::vector<PointCloud> cfree_obj;
+	for (const auto& eo : parent_cfree) {
+		std::vector<PointCloud> tmp = exact.extract(eo, node.getNode());
+		for (const auto& e : tmp) {
+			if (duplicate_check(e, cfree_obj)) continue;
+			cfree_obj.push_back(e);
+		}
+	}
+
+	if (cfree_obj.empty()) {
+		exact_g_cfree_cache[index] = {};
+		return {};
+	}
+
+	RRTNode& parent = g_tree.get_RRTNode(parent_index);
+	for (auto it = cfree_obj.begin(); it != cfree_obj.end(); ) {
+		std::vector<PointCloud> prev_real_cfree = exact.extract(*it, parent.getNode());
+		if (prev_real_cfree.size() != 1) {
+			it = cfree_obj.erase(it);
+		}
+		else {
+			++it;
+		}
+	}
+
+	exact_g_cfree_cache[index] = cfree_obj;
+	return exact_g_cfree_cache[index];
+}
+
+
+GoalJudge RRTConnect::goal_connect(RRTNode bef, RRTNode aft, int sindex, int gindex)
 {
 	double dist = bef.distance(aft);
 	if(dist > 1.0)	return GoalJudge::NotGoal;
@@ -737,9 +901,22 @@ GoalJudge RRTConnect::goal_connect(RRTNode bef, RRTNode aft)
 
 	std::vector<PointCloud> overlap_cfree = strategy->extract(bef_cfree[0], aft.getNode());
 	if(overlap_cfree.size() != 1) return GoalJudge::NotGoal;
-	
+		
 	for(const auto& afree: aft_cfree){
 		if(overlap_cfree[0].overlap(afree)){
+			if (exact_confirm_goal_connect_adaptive) {
+				std::vector<PointCloud> exact_bef_cfree = exact_s_cfree(sindex);
+				std::vector<PointCloud> exact_aft_cfree = exact_g_cfree(gindex);
+				if (exact_bef_cfree.size() != 1 || exact_aft_cfree.empty()) return GoalJudge::NotGoal;
+
+				DfsCFO exact;
+				std::vector<PointCloud> exact_overlap = exact.extract(exact_bef_cfree[0], aft.getNode());
+				if (exact_overlap.size() != 1) return GoalJudge::NotGoal;
+				for (const auto& exact_afree : exact_aft_cfree) {
+					if (exact_overlap[0].overlap(exact_afree)) return GoalJudge::Connect;
+				}
+				return GoalJudge::NotGoal;
+			}
 			return GoalJudge::Connect;
 		}
 	}
@@ -789,9 +966,12 @@ GoalJudge RRTConnect::goal_gconf(std::vector<PointCloud> cfo)
 
 	static int maxi = 0;
 	int nu = 1000;
+	CSpaceConfig* cs = CSpaceConfig::get_instance();
+	Vector3D<int> range = cs->getrange();
 	for(int i=0; i<(int)cfo.size(); ++i){
-		if(maxi < cfo[i].size())	maxi = cfo[i].size();
-		if(cfo[i].size() > nu){
+		int equivalent_points = (int)std::llround(cfo[i].weighted_size(range));
+		if(maxi < equivalent_points)	maxi = equivalent_points;
+		if(equivalent_points > nu){
 			std::ofstream log("../ICM_Log/icm.log", std::ios::app);
 			log << "Reverse nu : " << nu << std::endl;
 			return GoalJudge::GGoal;
@@ -875,9 +1055,11 @@ NodeList RRTConnect::path_concat(int sindex, int gindex)
 
 RRTConnect::RRTConnect()
 	:s_tree(), g_tree(),
-	 s_threshold(read_threshold()),
-	 strategy(new DfsCFO())
-{
+		 s_threshold(read_threshold()),
+		 strategy(make_cfo_strategy()),
+		 exact_confirm_adaptive(adaptive_exact_confirm_accept_enabled()),
+		 exact_confirm_goal_connect_adaptive(adaptive_exact_confirm_goal_connect_enabled())
+		{
 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
 	log << "Forward epsilon : " << s_threshold << std::endl;
 }
@@ -916,7 +1098,8 @@ NodeList RRTConnect::plan(Node ini, Node fin, State3D goal)
 			if(!sconf_update())	continue;
 			RRTNode sconf_newnode = s_tree.back_RRTNode();
 
-			GoalJudge sgj = sconf_goaljudge(goal, sconf_newnode, opponent_node);	
+			GoalJudge sgj = sconf_goaljudge(goal, sconf_newnode, opponent_node,
+				s_tree.get_now_index(), opponent_index);
 			if(sgj != GoalJudge::NotGoal)	
 				return make_path(sgj, s_tree.get_now_index(), opponent_index);
 
@@ -926,8 +1109,9 @@ NodeList RRTConnect::plan(Node ini, Node fin, State3D goal)
 
 				assert(s_tree.back_RRTNode().get_cfree_obj().size() == 1);
 				GoalJudge ggj = gconf_goaljudge(
-						g_tree.back_RRTNode().get_cfree_obj(), 
-						s_tree.back_RRTNode(), g_tree.back_RRTNode());
+						g_tree.back_RRTNode().get_cfree_obj(),
+						s_tree.back_RRTNode(), g_tree.back_RRTNode(),
+						s_tree.get_now_index(), g_tree.get_now_index());
 				
 				if(ggj != GoalJudge::NotGoal)	return make_path(ggj);
 
@@ -950,8 +1134,9 @@ NodeList RRTConnect::plan(Node ini, Node fin, State3D goal)
 			RRTNode gconf_newnode = g_tree.back_RRTNode();
 
 			GoalJudge ggj = gconf_goaljudge(
-					g_tree.back_RRTNode().get_cfree_obj(), 
-					opponent_node, gconf_newnode);
+					g_tree.back_RRTNode().get_cfree_obj(),
+					opponent_node, gconf_newnode,
+					opponent_index, g_tree.get_now_index());
 			
 			if(ggj != GoalJudge::NotGoal)	
 				return make_path(ggj, opponent_index, g_tree.get_now_index());
@@ -960,7 +1145,8 @@ NodeList RRTConnect::plan(Node ini, Node fin, State3D goal)
 				s_tree.add(opponent_index, newnode);
 				if(!sconf_update())	break;
 				assert(opponent_node.get_cfree_obj().size() == 1);
-				GoalJudge sgj = sconf_goaljudge(goal, s_tree.back_RRTNode(), g_tree.back_RRTNode());
+				GoalJudge sgj = sconf_goaljudge(goal, s_tree.back_RRTNode(), g_tree.back_RRTNode(),
+					s_tree.get_now_index(), g_tree.get_now_index());
 				if(sgj != GoalJudge::NotGoal)	return make_path(sgj);
 			
 				if(extend_limit(newnode, s_tree.back_RRTNode().node)){
@@ -1070,7 +1256,7 @@ void print_ICSs(std::vector<PointCloud> pcs)
 bool duplicate_check(PointCloud subject, std::vector<PointCloud> db)
 {
 	for(const auto& e : db){
-		if(e.exist(subject.get(0)))	return true;
+		if(e.overlap(subject))	return true;
 		else continue;
 	}
 	return false;

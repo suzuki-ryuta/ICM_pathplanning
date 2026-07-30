@@ -58,6 +58,34 @@ bool rrtstar_verbose()
 	return verbose;
 }
 
+int read_adaptive_cfo_int(const std::string& name, int default_value)
+{
+	bp::ptree pt;
+	try{
+		bp::ini_parser::read_ini("config/SpaceConfig.ini", pt);
+		return pt.get<int>("adaptive_cfo." + name, default_value);
+	}
+	catch(...){
+		return default_value;
+	}
+}
+
+bool adaptive_initial_enabled()
+{
+	return read_adaptive_cfo_int("enabled", 0) != 0
+	    && read_adaptive_cfo_int("initial_enabled", 1) != 0;
+}
+
+std::vector<PointCloud> extract_initial_cfree(Node node, bool use_adaptive_initial)
+{
+	if(use_adaptive_initial){
+		return extract_adaptive_initial_cfree(node);
+	}
+
+	CFreeICS ics(node);
+	return ics.extract();
+}
+
 bool same_pointcloud(const PointCloud& lhs, const PointCloud& rhs)
 {
 	if(lhs.size() != rhs.size()) return false;
@@ -199,10 +227,10 @@ bool RRTStar::initialize(Node ini)
 {
 	tree.push_back(ini, origin);
 	// tree.get_RRTNode(0).cost=0.0;
-	CFreeICS ics(ini);
+	const bool use_adaptive_initial = adaptive_initial_enabled();
 	std::cout << ini << std::endl;
 	if (!robot_update(ini))	return false;
-	std::vector<PointCloud> init_CFree = ics.extract();
+	std::vector<PointCloud> init_CFree = extract_initial_cfree(ini, use_adaptive_initial);
 	if(init_CFree.size() == 0)	return false;
 	print_ICSs(init_CFree);
 
@@ -363,7 +391,7 @@ bool RRTStar::config_valid(Node newnode)
 
 
 RRTStar::RRTStar()
-	:tree(), garound(), goal_indices(), strategy(new DfsCFO()),
+	:tree(), garound(), goal_indices(), strategy(make_cfo_strategy()),
   	threshold(read_threshold())
 {
 	load_parameters(max_iterations, eta, gamma, d);
@@ -516,14 +544,14 @@ void RevRRTStar::set_strategy(CFO* cfo)
 bool RevRRTStar::initialize(Node fin)
 {
 	tree.push_back(fin, origin);
-	CFreeICS ics(fin);
+	const bool use_adaptive_initial = adaptive_initial_enabled();
 
 	for(int i=0; i<6;++i){
 		std::cout << fin.get_element(i) << ", ";
 	} std::cout << std::endl;
 	if (!robot_update(fin))	return false;
 
-	std::vector<PointCloud> fin_CFree = ics.extract();
+	std::vector<PointCloud> fin_CFree = extract_initial_cfree(fin, use_adaptive_initial);
 	if(fin_CFree.size() == 0)	return false;
 	print_ICSs(fin_CFree);
 
@@ -532,8 +560,12 @@ bool RevRRTStar::initialize(Node fin)
 	std::cin >> index;
 	assert(0 <= index && index < (int)fin_CFree.size());
 	PointCloud selected = fin_CFree[index];
-	fin_CFree.erase(fin_CFree.begin() + index);
-	RRTNode init_node(fin, {selected}, fin_CFree);
+	std::vector<PointCloud> fin_del;
+	if(!use_adaptive_initial){
+		fin_CFree.erase(fin_CFree.begin() + index);
+		fin_del = fin_CFree;
+	}
+	RRTNode init_node(fin, {selected}, fin_del);
 	init_node.cost = 0.0;
 	init_node.is_valid = true;
 	tree.replace(init_node);
@@ -678,10 +710,13 @@ GoalJudge RevRRTStar::goal_judge(std::vector<PointCloud> pcs)
 
 	static int maxi = 0;
 	int nu = 1000;
+	CSpaceConfig* cs = CSpaceConfig::get_instance();
+	Vector3D<int> range = cs->getrange();
 	for(int i=0; i<(int)pcs.size(); ++i){
-		if(maxi < pcs[i].size())	maxi = pcs[i].size();
-		if(pcs[i].size() > nu){
-			std::cout << "num: " << pcs[i].size() << std::endl;
+		int equivalent_points = (int)std::llround(pcs[i].weighted_size(range));
+		if(maxi < equivalent_points)	maxi = equivalent_points;
+		if(equivalent_points > nu){
+			std::cout << "num: " << equivalent_points << std::endl;
 
 			return GoalJudge::Goal;
 		}
@@ -702,7 +737,7 @@ std::vector<int> RevRRTStar::get_neighbors_weighted(int index, double radius)
 
 
 RevRRTStar::RevRRTStar()
-	:tree(), garound(), goal_indices(), strategy(new DfsCFO()), cluster_distance_threshold(0.0)
+	:tree(), garound(), goal_indices(), strategy(make_cfo_strategy()), cluster_distance_threshold(0.0)
 {
 	load_parameters(max_iterations, eta, gamma, d);
 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);
@@ -911,14 +946,14 @@ std::string RevRRTStar::make_goal_cost_report(int selected_index)
 
 bool RRTStarConnect::initialize(Node ini, Node fin)
 {
-	CFreeICS ini_ics(ini), fin_ics(fin);
 	s_tree.push_back(ini, origin);
 	g_tree.push_back(fin, origin);
 	int index1 = -1, index2 = -1;
+	const bool use_adaptive_initial = adaptive_initial_enabled();
 
 	// Setting initial configuration
 	if(!robot_update(ini))	return false;
-	std::vector<PointCloud> ini_CFree = ini_ics.extract();
+	std::vector<PointCloud> ini_CFree = extract_initial_cfree(ini, use_adaptive_initial);
 	if(ini_CFree.size() == 0)	return false;
 	print_ICSs(ini_CFree);
 
@@ -932,7 +967,7 @@ bool RRTStarConnect::initialize(Node ini, Node fin)
 
 	// Setting goal configuration
 	if(!robot_update(fin))	return false;
-	std::vector<PointCloud> fin_CFree = fin_ics.extract();
+	std::vector<PointCloud> fin_CFree = extract_initial_cfree(fin, use_adaptive_initial);
 	if(fin_CFree.size() == 0)	return false;
 	print_ICSs(fin_CFree);
 
@@ -940,8 +975,12 @@ bool RRTStarConnect::initialize(Node ini, Node fin)
 	std::cin >> index2;
 	assert(0 <= index2 && index2 < (int)fin_CFree.size());
 	PointCloud selected = fin_CFree[index2];
-	fin_CFree.erase(fin_CFree.begin() + index2);
-	RRTNode g_init(fin, {selected}, fin_CFree);
+	std::vector<PointCloud> fin_del;
+	if(!use_adaptive_initial){
+		fin_CFree.erase(fin_CFree.begin() + index2);
+		fin_del = fin_CFree;
+	}
+	RRTNode g_init(fin, {selected}, fin_del);
 	g_init.cost = 0.0;
 	g_init.is_valid = true;
 	g_tree.replace(g_init);
@@ -1167,9 +1206,12 @@ GoalJudge RRTStarConnect::goal_gconf(std::vector<PointCloud> cfo)
 
 	static int maxi = 0;
 	int nu = 1000;
+	CSpaceConfig* cs = CSpaceConfig::get_instance();
+	Vector3D<int> range = cs->getrange();
 	for(int i=0; i<(int)cfo.size(); ++i){
-		if(maxi < cfo[i].size())	maxi = cfo[i].size();
-		if(cfo[i].size() > nu){
+		int equivalent_points = (int)std::llround(cfo[i].weighted_size(range));
+		if(maxi < equivalent_points)	maxi = equivalent_points;
+		if(equivalent_points > nu){
 			return GoalJudge::GGoal;
 		}
 	}
@@ -1363,7 +1405,7 @@ std::string RRTStarConnect::make_goal_cost_report(int selected_candidate)
 RRTStarConnect::RRTStarConnect()
 	:s_tree(), g_tree(), goal_candidates(),
 	 s_threshold(read_threshold()),
-	 strategy(new DfsCFO())
+	 strategy(make_cfo_strategy())
 {
 	load_parameters(max_iterations, eta, gamma, d);
 	std::ofstream log("../ICM_Log/icm.log", std::ios::app);

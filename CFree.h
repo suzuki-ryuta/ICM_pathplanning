@@ -147,6 +147,7 @@ public:
 			if (controller->WintersectS())	continue;
 
 			c_dfs.resize(c_dfs.size() + 1);
+			c_dfs.back().set_default_cell_size(CSpaceConfig::get_instance()->getrange());
 			int index = target.coord_to_index(previous.get_pt(i));
 			mark_target(index);
 			c_dfs.back().push(previous.get_pt(i));
@@ -295,6 +296,26 @@ public:
 };
 
 
+class AdaptiveDfsCFO : public CFO
+{
+private:
+	int stride_x;
+	int stride_y;
+	int stride_th;
+	int refine_boundary;
+	int refine_radius_cells;
+	int max_boundary_seeds;
+	int max_refine_checks;
+	int max_refined_points;
+	int check_coarse_connections;
+	int strict_cell_sampling;
 
+public:
+	AdaptiveDfsCFO();
+	~AdaptiveDfsCFO(){}
 
+	std::vector<PointCloud> extract(PointCloud prev, Node newnode);
+};
 
+CFO* make_cfo_strategy();
+std::vector<PointCloud> extract_adaptive_initial_cfree(Node node);

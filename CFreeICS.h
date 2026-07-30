@@ -39,6 +39,9 @@ public:
 		Labeling* label = new Labeling(cspace); //クラスター番号を管理するための配列を生成
 		int clust = label->labeling3D(); //隣接する格子点を統合し，クラスターを生成．その後クラスターの数をカウント
 		c_free_ics.resize(clust); //ICSのクラスタ数
+		for (auto& pc : c_free_ics) {
+			pc.set_default_cell_size(conf->getrange());
+		}
 
 		for (int ix = 0; ix < conf->getnumx(); ++ix)
 			for (int iy = 0; iy < conf->getnumy(); ++iy)

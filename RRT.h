@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <unordered_map>
 
 #include "RRTTree.h"
 #include "Planner.h"
@@ -89,15 +90,19 @@ class RRTConnect : public Planner //Plannerの継承
 {
 private:
 	RRTTree s_tree, g_tree;
-	int s_threshold;
-	double cluster_distance_threshold;
-	CFO* strategy;
+		int s_threshold;
+		double cluster_distance_threshold;
+			CFO* strategy;
+			bool exact_confirm_adaptive;
+			bool exact_confirm_goal_connect_adaptive;
+			std::unordered_map<int, std::vector<PointCloud>> exact_s_cfree_cache;
+			std::unordered_map<int, std::vector<PointCloud>> exact_g_cfree_cache;
 
 	bool initialize(Node ini, Node fin);
 	bool sconf_update();
 	bool gconf_update();
-	GoalJudge sconf_goaljudge(State3D goal, RRTNode bef, RRTNode aft);
-	GoalJudge gconf_goaljudge(std::vector<PointCloud> cfo, RRTNode bef, RRTNode aft);
+		GoalJudge sconf_goaljudge(State3D goal, RRTNode bef, RRTNode aft, int sindex, int gindex);
+		GoalJudge gconf_goaljudge(std::vector<PointCloud> cfo, RRTNode bef, RRTNode aft, int sindex, int gindex);
 
 	bool caging_validation_sconf(Node node);
 	bool caging_validation_gconf(Node node);
@@ -105,8 +110,10 @@ private:
 	double calculate_cluster_distance(const PointCloud& old_pc, const PointCloud& new_pc);
 
 	GoalJudge goal_sconf(State3D goal);
-	GoalJudge goal_connect(RRTNode bef, RRTNode aft);
-	GoalJudge goal_gconf(std::vector<PointCloud> cfo);
+		GoalJudge goal_connect(RRTNode bef, RRTNode aft, int sindex, int gindex);
+		GoalJudge goal_gconf(std::vector<PointCloud> cfo);
+		std::vector<PointCloud> exact_s_cfree(int index);
+		std::vector<PointCloud> exact_g_cfree(int index);
 
 	bool cluster_extent_heuristic(const PointCloud& child_region, const PointCloud& parent_region, int eps);
 	bool cluster_number_judge(const PointCloud& child_region, const PointCloud& parent_region, int eps);
